@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.vsix
+.DS_Store
+
+# Scratch repo with its own .git, used for manual testing only.
+sandbox/
+test/harness/driver.js
