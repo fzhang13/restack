@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Restack harness</title>
+<link rel="stylesheet" href="../../dist/webview.css">
+<style>
+  /* Approximate the VS Code sidebar so layout issues show up here. */
+  body { background: #1f1f1f; color: #ccc; --vscode-font-family: system-ui;
+         --vscode-font-size: 13px; --vscode-focusBorder: #0078d4;
+         --vscode-editorWidget-background: #252526; --vscode-widget-border: #3c3c3c;
+         --vscode-button-secondaryBackground: #3a3d41; --vscode-button-secondaryForeground: #fff;
+         --vscode-textPreformat-foreground: #ce9178;
+         --vscode-diffEditor-insertedTextBackground: rgba(80,160,80,0.18);
+         --vscode-editor-font-family: monospace; }
+  #frame { width: 420px; border: 1px solid #333; }
+</style>
+</head>
+<body>
+<div id="frame"><div id="root"></div></div>
+<script>
+  // Stub the VS Code webview API and record every outbound message so the
+  // driver can assert on what the extension host would have received.
+  window.__sent = [];
+  window.acquireVsCodeApi = () => ({
+    postMessage: (m) => { window.__sent.push(m); window.__onSend && window.__onSend(m); },
+    getState: () => undefined,
+    setState: () => {},
+  });
+</script>
+<script src="../../dist/webview.js"></script>
+<script src="./driver.js"></script>
+</body>
+</html>
