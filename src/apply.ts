@@ -1,107 +1,21 @@
-import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
-import { promisify } from 'node:util';
+import { join } from 'node:path';
+import {
+  ApplyError,
+  LOCAL_TIMEOUT_MS,
+  REMOTE_TIMEOUT_MS,
+  firstLine,
+  gitCommonDir,
+  hasOrigin,
+  run,
+  setLogSink,
+  type RunResult,
+} from './git.ts';
 import { basesForOrder, rewriteMetadata } from './metadata.ts';
 import { publishSteps } from './plan.ts';
+import { branchesBehind, readAllTracking } from './remote.ts';
 import type { ApplyProgress, ApplyScope, Plan, PlanStep, Stack } from './model.ts';
-
-const execFileAsync = promisify(execFile);
-
-/**
- * Every child process runs with editors disabled. `git rebase --continue` opens
- * $EDITOR to confirm the commit message; from an extension host there is no
- * terminal attached, so it would block forever on a pipe nobody reads.
- * GIT_TERMINAL_PROMPT stops a credential prompt doing the same during push.
- */
-const CHILD_ENV = {
-  ...process.env,
-  GIT_EDITOR: 'true',
-  GIT_SEQUENCE_EDITOR: 'true',
-  GIT_TERMINAL_PROMPT: '0',
-};
-
-const LOCAL_TIMEOUT_MS = 60_000;
-/** Push and submit go over the network. */
-const REMOTE_TIMEOUT_MS = 180_000;
-
-export interface RunResult {
-  code: number;
-  stdout: string;
-  stderr: string;
-}
-
-interface ExecError extends Error {
-  code?: number | string;
-  stdout?: string;
-  stderr?: string;
-}
-
-/**
- * Sink for the full command log. Set by ApplyRunner so the module-level `run`
- * can report every child process without every call site threading a logger
- * through. The UI only ever shows the first stderr line; the rest lands here.
- */
-let logSink: ((line: string) => void) | undefined;
-
-/**
- * Run a child process, mapping every failure to a code. Never rejects.
- *
- * Exported as `runCommand` for init.ts, so commands Restack runs outside an
- * apply session still land in the same output channel. A second exec path
- * would be a second thing to keep logging.
- */
-async function run(
-  file: string,
-  args: string[],
-  cwd: string,
-  timeout = LOCAL_TIMEOUT_MS,
-): Promise<RunResult> {
-  const started = Date.now();
-  const result = await execute(file, args, cwd, timeout);
-
-  if (logSink) {
-    const ms = Date.now() - started;
-    logSink(`$ ${file} ${args.join(' ')}  (exit ${result.code}, ${ms}ms)`);
-    for (const stream of [result.stdout, result.stderr]) {
-      const text = stream.trim();
-      if (text) {
-        logSink(text.split('\n').map((l) => `    ${l}`).join('\n'));
-      }
-    }
-  }
-
-  return result;
-}
-
-async function execute(
-  file: string,
-  args: string[],
-  cwd: string,
-  timeout: number,
-): Promise<RunResult> {
-  try {
-    const { stdout, stderr } = await execFileAsync(file, args, {
-      cwd,
-      env: CHILD_ENV,
-      timeout,
-      maxBuffer: 8 * 1024 * 1024,
-    });
-    return { code: 0, stdout, stderr };
-  } catch (err) {
-    const e = err as ExecError;
-    return {
-      code: typeof e.code === 'number' ? e.code : 1,
-      stdout: e.stdout ?? '',
-      stderr: e.stderr ?? e.message ?? '',
-    };
-  }
-}
-
-function firstLine(text: string): string {
-  return text.trim().split('\n').find((l) => l.trim().length > 0)?.trim() ?? '';
-}
 
 /**
  * Snapshot taken before the first rebase, and the sole basis for undo.
@@ -186,18 +100,6 @@ function serialize(session: Session): PersistedSession {
   };
 }
 
-export class ApplyError extends Error {}
-
-/** Resolve `.git`, honouring worktrees and `.git`-as-a-file. */
-async function gitCommonDir(cwd: string): Promise<string> {
-  const result = await run('git', ['rev-parse', '--git-common-dir'], cwd);
-  if (result.code !== 0) {
-    throw new ApplyError('Not a git repository.');
-  }
-  const dir = result.stdout.trim();
-  return isAbsolute(dir) ? dir : join(cwd, dir);
-}
-
 async function rebaseInProgress(cwd: string): Promise<boolean> {
   const gitDir = await gitCommonDir(cwd);
   // A worktree mid-rebase keeps these in its private dir, not the common one.
@@ -216,18 +118,12 @@ async function revParse(cwd: string, ref: string): Promise<string | undefined> {
   return result.code === 0 ? result.stdout.trim() : undefined;
 }
 
-export { run as runCommand, firstLine, gitCommonDir, rebaseInProgress, unmergedFiles };
-
-/**
- * Whether there is anywhere to push. Checked before the confirmation modal so
- * a remote-less repository is never offered "Apply & Publish" — being refused
- * after choosing it costs the user the local reorder too, since preflight
- * blocks the whole apply rather than silently downgrading the scope.
- */
-export async function hasOrigin(cwd: string): Promise<boolean> {
-  const remote = await run('git', ['remote', 'get-url', 'origin'], cwd);
-  return remote.code === 0;
-}
+// Re-exported rather than moved-and-forgotten: init.ts, extension.ts, and the
+// tests all reach for these here, and git.ts is an implementation detail of
+// where the subprocess actually happens.
+export { run as runCommand, firstLine, gitCommonDir, hasOrigin, ApplyError } from './git.ts';
+export type { RunResult } from './git.ts';
+export { rebaseInProgress, unmergedFiles };
 
 /**
  * Refuse to start unless the repository is in a state where every step is
@@ -257,6 +153,24 @@ export async function preflight(
   const merged = stack.branches.filter((b) => b.isMerged).map((b) => b.name);
   if (merged.length > 0) {
     return `Stack contains merged branches (${merged.join(', ')}). gh-stack rejects reordering around them.`;
+  }
+
+  // The clobber case. `gh stack push` uses --force-with-lease, which compares
+  // against the remote-tracking ref — so a branch that is behind means someone
+  // pushed commits we have not fetched, the stale ref satisfies the lease, and
+  // their work is overwritten with no warning. Rewriting first would make that
+  // certain, so it is refused here rather than survived later.
+  //
+  // Local ref reads only, so this stays a preflight and not a network call.
+  const behind = branchesBehind(await readAllTracking(cwd), order);
+  if (behind.length > 0) {
+    const list = behind
+      .map((t) => `${t.branch} is ${t.behind} behind ${t.upstream ?? 'its upstream'}`)
+      .join('; ');
+    return (
+      `${list}. Fetch and sync before rewriting — \`gh stack push\` force-pushes ` +
+      `with a lease against a stale remote ref, which would drop those commits.`
+    );
   }
 
   // Branches joining the stack are not in `stack.branches`, so nothing has
@@ -316,7 +230,7 @@ export class ApplyRunner {
     this.emit = emit;
     this.options = options;
     if (options.log) {
-      logSink = options.log;
+      setLogSink(options.log);
     }
   }
 

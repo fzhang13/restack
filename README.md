@@ -71,6 +71,47 @@ If stacks exist but the current branch is not in one, the panel lists them with
 a **Check out** button instead — that is usually what you wanted, not a second
 stack.
 
+### Working against another branch
+
+A stack does not have to sit on the default branch. `gh stack init --base` takes
+any branch, and the case it exists for is building on top of a colleague's work
+before it merges: their branch becomes your trunk, your bottom PR targets it,
+and the whole stack lands after theirs does.
+
+The Trunk dropdown lists local branches and, in a second group, remote-tracking
+ones. A colleague's branch usually only exists as `origin/their-work`, so picking
+it creates a local branch tracking it first — gh-stack records a trunk by *name*
+and needs it to resolve locally. That happens before `gh stack init`, and a
+failure aborts the whole thing rather than recording a trunk that is not there.
+
+Picking a remote branch also fetches first, and the reason is the second time you
+do it. By then `their-work` already exists locally, sitting at the commit it was
+created at, while its owner has pushed twice since — so creating it is right once
+and wrong every time after. Restack fast-forwards it instead, which cannot lose
+anything, and says by how many commits in the output channel. If the local copy
+has commits of its own it is neither adopted nor rewritten: someone else's branch
+is not ours to rebase, so Restack names the drift and stops.
+
+**Change base…** on the trunk row moves an existing stack, which is the other
+half of the same story: once their branch merges into `main`, the stack should
+sit on `main`. It opens a picker of local and remote branches, then replays the
+bottom branch onto the new base and cascades everything above it — an ordinary
+apply, with the plan on screen first, conflicts pausing, and undo available.
+Picking a remote branch goes through the same fetch-and-catch-up as init; picking
+a *local* one does not, so if it has fallen behind its own upstream the
+confirmation says so before you commit to it, rather than silently landing the
+stack on an old commit. That one is a note and not a refusal — basing on an
+older commit deliberately is legitimate, and Sync stack is the fix if it was not.
+The
+metadata write records the new trunk, which is what makes the next
+`gh stack submit` retarget the bottom PR. Restack says so in the confirmation,
+naming the PR, because that retarget is the part that reaches GitHub.
+
+Nothing about this is special-cased in the rebase arithmetic. Changing the base
+is `{...stack, trunk: newBase}` handed to the same `computePlan`; the bottom
+branch's *recorded* base still anchors its replay, so it takes its own commits
+and not the new base's. See [the recorded-SHA detail](#the-recorded-sha-detail).
+
 ### Knowing where you are, and moving
 
 The row you are standing on carries a **HEAD** pill and a filled node, and a
@@ -211,6 +252,58 @@ there rebased and unpushed, and this is the route to origin. It runs the same
 two steps through the same progress UI, with Undo correctly unavailable: there
 is no local snapshot behind it because nothing local was rewritten.
 
+### Remote state
+
+![Restack showing the trunk 3 commits behind its upstream, the sync banner, and per-branch ahead/behind pills](https://raw.githubusercontent.com/fzhang13/restack/main/media/screenshot-remote.png)
+
+Every count Restack shows about the remote is read from `refs/remotes` and the
+branch config — one `git for-each-ref`, no network. That is what makes it safe to
+re-read on every `.git/HEAD` change, and it is also the catch: those refs are
+only as fresh as your last fetch. **Fetch** in the toolbar is the one control
+that goes and asks (`git fetch --prune <remote>`), and its tooltip says how long
+ago that last happened. Nothing polls in the background — a hidden network call
+on a timer is not something an editor panel should be doing on your behalf.
+
+`--prune` is not incidental. Without it, a branch deleted on the remote keeps a
+stale `refs/remotes` entry and reads as level forever, so `gone` would never
+appear.
+
+Rows carry a small pill for where they stand: `↑2` ahead, `↓3` behind, `↑2 ↓1`
+diverged, plus `unpushed` and `gone` — those two spelled out because an absence
+of counts is otherwise indistinguishable from being level. A branch that matches
+its upstream gets nothing at all; a row of *in sync* badges would bury the two
+states that matter. The trunk row carries the same pill, so "3 behind
+`origin/main`" is visible without opening a plan. The *Proposed* column does not,
+because it describes a future arrangement and these counts are about the present.
+
+When the trunk is behind, a banner offers **Sync stack**. It fetches first —
+always, because a plan built from stale refs would fast-forward the trunk to a
+commit that is no longer its tip — then re-reads the stack and builds an ordinary
+plan: a fast-forward step, then the whole cascade replayed on top, then the
+metadata write. The fast-forward has two forms, because git does. With the trunk
+not checked out it is `git fetch <remote> <trunk>:<trunk>`, which git refuses
+unless it really is a fast-forward; standing *on* the trunk it is
+`git merge --ff-only <remote>/<trunk>`, because git will not fetch into a branch
+you have checked out. Everything after that is a normal apply — snapshot,
+conflict pause, undo — and nothing is pushed.
+
+The other banner blocks. If a *stack branch* is behind its upstream, somebody
+pushed commits to your branch that you do not have, and preflight refuses the
+apply outright:
+
+> `feat/api` is 2 behind `origin/feat/api`. Fetch and sync before rewriting —
+> `gh stack push` force-pushes with a lease against a stale remote ref, which
+> would drop those commits.
+
+`--force-with-lease` is not protection here. It compares against the
+*remote-tracking* ref, which is the stale one; the lease passes and the commits
+go. Restack has no safe automatic answer either, since both sides have moved —
+so it names the branches and stops, and the banner renders above the sync one and
+disables its button, so the UI never offers an action preflight will reject.
+`gone` is excluded from all of this on purpose: a branch deleted after its PR
+merged has nothing left to clobber, and refusing there would block every stack
+that had ever landed anything.
+
 ### Why Restack writes `.git/gh-stack`
 
 Rebasing moves branch refs but leaves gh-stack's own state file alone. Verified
@@ -293,15 +386,16 @@ npm install
 npm run build      # or: npm run watch
 npm test           # parser, plan, metadata + apply against real temp repos
 npm run typecheck
-npm run media      # regenerate the icon and both screenshots
+npm run media      # regenerate the icon and all three screenshots
 ```
 
 Press **F5** in VS Code to launch an Extension Development Host.
 
-Both screenshots are rendered from the real webview bundle through
-`test/harness/index.html`, driven by scripted gestures — a reorder for
-`screenshot.png`, drag-and-type for `screenshot-init.png`. They cannot drift
-from the UI, because they *are* the UI.
+All three screenshots are rendered from the real webview bundle through
+`test/harness/index.html` — a scripted reorder for `screenshot.png`,
+drag-and-type for `screenshot-init.png`, and the harness's `?view=behind` scene
+for `screenshot-remote.png`, which needs no gesture because the state is the
+subject. They cannot drift from the UI, because they *are* the UI.
 
 ### Sandbox
 
@@ -372,7 +466,7 @@ One-time setup:
 The publisher name in both must match `publisher` in `package.json`.
 
 ```bash
-npm version minor               # bump + tag; update CHANGELOG.md first
+npm version minor               # or patch; bump + tag, CHANGELOG.md first
 npm run publish:vsce
 npm run publish:ovsx -- --packagePath restack-<version>.vsix
 git push --follow-tags
@@ -400,7 +494,13 @@ Working:
   VS Code's three-way merge editor and tracked live off `.git/index`
 - A HEAD indicator showing where you are in the stack, and checkout from a row
   button, the status bar, or the command palette
+- Basing a stack on any branch, local or remote-only — a colleague's work rather
+  than the default branch — and moving an existing stack onto a different base
+- Remote state read from local refs: ahead/behind pills per row, a Fetch button
+  as the only network call, and Sync stack to fast-forward a trunk that moved
 - Dirty-worktree and mid-rebase refusal before anything runs
+- Refusal to rewrite a branch that is behind its upstream, which `gh stack push`
+  would then force-push over
 - Apply state persisted to `workspaceState`, so a window reload mid-apply comes
   back with Continue/Abort/Undo live
 - Clickable PR links and conflicted files; `Alt+↑`/`Alt+↓` to reorder a focused
@@ -411,6 +511,11 @@ Not built yet:
 
 - No stash offer on a dirty worktree — Restack refuses and leaves it to you.
 - Multi-root workspace support (reads the first workspace folder only).
+- A stack branch that is behind its upstream is refused, not reconciled. Pulling
+  it is left to you: once both sides have moved there is no safe automatic
+  answer, and guessing one is how commits go missing.
+- Nothing fetches on a schedule. The counts are as old as your last Fetch, which
+  the tooltip tells you.
 - Push and submit are verified by unit tests and by hand, not end to end in CI —
   that needs a throwaway GitHub repo.
 

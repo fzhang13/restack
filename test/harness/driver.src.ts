@@ -1,6 +1,6 @@
 import { parseStack } from '../../src/parse';
-import { computePlan, publishSteps } from '../../src/plan';
-import type { CandidateBranch, StackBranch } from '../../src/model';
+import { changeBasePlan, computePlan, publishSteps, syncPlan } from '../../src/plan';
+import type { CandidateBranch, RemoteState, StackBranch, Tracking } from '../../src/model';
 import fixture from '../../fixtures/stack-no-prs.json';
 
 /**
@@ -33,11 +33,57 @@ const candidates: CandidateBranch[] = [
  *   ?view=trunk   HEAD on the trunk rather than on any stack branch
  *   ?view=away    HEAD on a branch gh-stack does not list at all
  *   ?view=conflict a paused rebase, for the conflict panel
+ *   ?view=behind  the trunk moved under the stack — the sync banner
+ *   ?view=diverged a stack branch is behind its upstream — the blocking banner
+ *   ?view=remote-base a stack based on a colleague's branch, not on main
+ *   ?view=no-remote no remote at all: Fetch disabled, no badges anywhere
  */
 const view = new URLSearchParams(location.search).get('view') ?? '';
 
 /** Stacks gh-stack has recorded, for the "standing outside one" case. */
 const localStacks = [{ trunk: 'main', branches: ['feat/auth', 'feat/api', 'feat/ui'] }];
+
+/** Remote-tracking refs, for the init view's remote optgroup. */
+const remoteBranches = ['origin/main', 'origin/colleague/feature', 'origin/release/2.0'];
+
+function track(branch: string, ahead: number, behind: number, extra: Partial<Tracking> = {}): Tracking {
+  return { branch, upstream: `origin/${branch}`, ahead, behind, gone: false, ...extra };
+}
+
+/**
+ * What readRemoteState would report, per view. Local reads in the real host, so
+ * this arrives with every `stack` message rather than being fetched separately.
+ *
+ * `lastFetched` is stamped at load so the relative time renders as "just now"
+ * rather than a fixed date drifting further into the past.
+ */
+function remoteFor(trunk: string): RemoteState | undefined {
+  if (view === 'no-remote') {
+    return undefined;
+  }
+
+  const branches: Tracking[] =
+    view === 'diverged'
+      ? [
+          track('feat/auth', 0, 0),
+          // Someone pushed to this one while we were working: the case
+          // --force-with-lease cannot save us from.
+          track('feat/api', 2, 1),
+          { branch: 'feat/ui', ahead: 0, behind: 0, gone: false },
+        ]
+      : [
+          track('feat/auth', 0, 0),
+          track('feat/api', 1, 0),
+          { branch: 'feat/ui', ahead: 0, behind: 0, gone: false },
+        ];
+
+  return {
+    remote: 'origin',
+    trunk: track(trunk, 0, view === 'behind' ? 3 : 0),
+    branches,
+    lastFetched: Date.now(),
+  };
+}
 
 function sendStack() {
   if (view === 'init' || view === 'outside') {
@@ -49,6 +95,7 @@ function sendStack() {
           message: 'current branch "main" is not part of a stack',
           trunk: 'main',
           localBranches: ['main', 'develop', 'spike/cache', 'chore/deps'],
+          remoteBranches,
           stacks: view === 'outside' ? localStacks : [],
         },
         candidates,
@@ -77,10 +124,17 @@ function sendStack() {
     drift: drifted,
     trunk: elsewhere(stack.trunk),
     away: elsewhere('spike/cache'),
+    // The whole point of --base: a stack sitting on a branch that is not the
+    // default one, and whose own PR is still open.
+    'remote-base': { ...stack, trunk: 'colleague/feature' },
   };
 
-  const result = { kind: 'ok', stack: stacks[view] ?? stack };
-  window.postMessage({ type: 'stack', result, candidates, canPublish: true }, '*');
+  const shown = (stacks[view] ?? stack) as typeof stack;
+  const result = { kind: 'ok', stack: shown };
+  window.postMessage(
+    { type: 'stack', result, candidates, canPublish: true, remote: remoteFor(shown.trunk) },
+    '*',
+  );
 
   if (view === 'conflict') {
     sendConflict(['shared.txt', 'src/one.ts']);
@@ -224,7 +278,32 @@ function fakePushSubmit() {
   } else if (m.type === 'initStack' || m.type === 'rebaseStack') {
     // Both are host-side: one shells out to gh, the other opens an apply
     // session. Logged so the button is visibly wired.
-    console.log('[harness]', m.type, m.trunk ?? '', (m.branches ?? []).join(' '));
+    console.log(
+      '[harness]',
+      m.type,
+      m.trunk ?? '',
+      m.trunkIsRemote ? '(remote — host creates the tracking branch)' : '',
+      (m.branches ?? []).join(' '),
+    );
+  } else if (m.type === 'fetch') {
+    // The one network call. Nothing to reach here, so the counts just come
+    // back as they were — enough to see the button is wired and re-renders.
+    console.log('[harness] fetch — no remote to reach, re-sending state');
+    sendStack();
+  } else if (m.type === 'syncStack') {
+    // The real host fetches, re-reads, then runs this plan. Rendering the plan
+    // is the part worth eyeballing: trunk step first, then the cascade.
+    const plan = syncPlan(stack, 'origin', false);
+    console.log('[harness] syncStack —', plan.steps.length, 'steps');
+    window.postMessage({ type: 'plan', plan }, '*');
+  } else if (m.type === 'pickBase') {
+    // A native QuickPick in the host. Stand in for a choice so the plan the
+    // pick would produce is still reachable.
+    console.log('[harness] pickBase — picking origin/release/2.0 on your behalf');
+    window.postMessage({ type: 'plan', plan: changeBasePlan(stack, 'release/2.0') }, '*');
+  } else if (m.type === 'changeBase') {
+    console.log('[harness] changeBase', m.base, m.isRemote ? '(remote)' : '');
+    window.postMessage({ type: 'plan', plan: changeBasePlan(stack, m.base) }, '*');
   } else if (m.type === 'openMergeEditor') {
     // Stand in for the whole loop: the merge editor opens, the merge is
     // completed, the file is staged, and the index watcher reports it back.

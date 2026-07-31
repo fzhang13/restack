@@ -3,7 +3,17 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readStack } from './stack';
 import { readCandidates, readBranchCandidates } from './candidates';
-import { addArgs, computePlan, initArgs, unstackArgs } from './plan';
+import { addArgs, changeBasePlan, computePlan, initArgs, syncPlan, unstackArgs } from './plan';
+import {
+  detectRemote,
+  ensureBaseBranch,
+  fetchRemote,
+  readAllTracking,
+  listRemoteBranches,
+  listRemotes,
+  localNameFor,
+  readRemoteState,
+} from './remote';
 import {
   ApplyRunner,
   hasOrigin,
@@ -15,6 +25,7 @@ import {
   addPreflight,
   detectTrunk,
   initPreflight,
+  listLocalBranches,
   readLocalStacks,
   runAdd,
   runInit,
@@ -27,6 +38,7 @@ import type {
   CandidateBranch,
   HostMessage,
   Plan,
+  RemoteState,
   Stack,
   StackResult,
   WebviewMessage,
@@ -52,6 +64,7 @@ class StackViewProvider implements vscode.WebviewViewProvider {
   private lastPlan?: Plan;
   private lastOrder?: string[];
   private lastCandidates: CandidateBranch[] = [];
+  private lastRemote?: RemoteState;
   private readonly runner: ApplyRunner;
   private readonly log: vscode.OutputChannel;
   private readonly status: vscode.StatusBarItem;
@@ -192,7 +205,19 @@ class StackViewProvider implements vscode.WebviewViewProvider {
           void this.handleApply(message.order);
           break;
         case 'initStack':
-          void this.handleInitStack(message.trunk, message.branches);
+          void this.handleInitStack(message.trunk, message.branches, message.trunkIsRemote);
+          break;
+        case 'fetch':
+          void this.fetch();
+          break;
+        case 'syncStack':
+          void this.handleSyncStack();
+          break;
+        case 'changeBase':
+          void this.handleChangeBase(message.base, message.isRemote);
+          break;
+        case 'pickBase':
+          void this.changeBase();
           break;
         case 'addBranch':
           void this.handleAddBranch(message.branch);
@@ -476,6 +501,77 @@ class StackViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Turn a picked remote-tracking ref into a local branch fit to base a stack
+   * on, fetching first so "up to date" means it.
+   *
+   * Both entry points — init and change-base — need exactly this, and needed it
+   * to be more than `git branch --track`. That command is right the first time
+   * and wrong every time after: the local branch already exists, at whatever
+   * commit it was created at, while its owner has moved on. Adopting it
+   * silently would replay the whole stack onto a stale base with nothing on
+   * screen saying so.
+   *
+   * The fetch is here rather than left to the user for the same reason
+   * handleSyncStack fetches: a base resolved from stale refs is stale whether
+   * or not anyone remembered to press the button. A failed fetch is reported
+   * but not fatal — the refs on disk may still be recent enough, and refusing
+   * outright would make an offline repository unusable for a local base.
+   *
+   * Returns the local branch name, or undefined when the caller should stop.
+   */
+  private async resolveRemoteBase(cwd: string, picked: string): Promise<string | undefined> {
+    const remotes = await listRemotes(cwd);
+    const local = localNameFor(picked, remotes);
+    // Found by matching, not by slicing off the difference: when `picked` has
+    // no remote prefix at all localNameFor returns it unchanged, and arithmetic
+    // on the two lengths would invent a remote out of the branch name.
+    const remote = remotes.find((r) => picked.startsWith(`${r}/`));
+
+    if (remote) {
+      const failure = await vscode.window.withProgress(
+        { location: { viewId: 'restack.stackView' }, title: `Fetching ${remote}…` },
+        () => fetchRemote(cwd, remote),
+      );
+      if (failure) {
+        this.log.appendLine(`Could not fetch ${remote} before resolving ${picked}: ${failure}`);
+      }
+    }
+
+    const result = await ensureBaseBranch(cwd, local, picked);
+    switch (result.kind) {
+      case 'failed':
+        void vscode.window.showErrorMessage(`Restack: ${result.message}`);
+        return undefined;
+
+      case 'diverged': {
+        // Local commits on a branch we do not own. Fast-forwarding is not an
+        // option and rewriting it is not ours to do, so the stack would sit on
+        // a base that is neither theirs nor cleanly ours — say so and stop.
+        void vscode.window.showErrorMessage(
+          `Restack: ${local} has ${result.ahead} commit${result.ahead === 1 ? '' : 's'} ` +
+            `${picked} does not` +
+            (result.behind > 0 ? `, and is ${result.behind} behind it` : '') +
+            `. Reconcile it before basing a stack on it.`,
+        );
+        return undefined;
+      }
+
+      case 'fastForwarded':
+        this.log.appendLine(
+          `Fast-forwarded ${local} ${result.by} commit${result.by === 1 ? '' : 's'} to ${picked}.`,
+        );
+        return local;
+
+      case 'created':
+        this.log.appendLine(`Created ${local} tracking ${picked}.`);
+        return local;
+
+      default:
+        return local;
+    }
+  }
+
+  /**
    * Create a stack from the branches the user dragged into order.
    *
    * No confirmation modal, unlike apply: the webview shows the exact command
@@ -484,7 +580,11 @@ class StackViewProvider implements vscode.WebviewViewProvider {
    * it runs here rather than in the webview because only the host can see the
    * working tree.
    */
-  private async handleInitStack(trunk: string, branches: string[]): Promise<void> {
+  private async handleInitStack(
+    trunk: string,
+    branches: string[],
+    trunkIsRemote?: boolean,
+  ): Promise<void> {
     const cwd = this.workspacePath();
     if (!cwd) {
       return;
@@ -498,14 +598,29 @@ class StackViewProvider implements vscode.WebviewViewProvider {
     }
 
     await this.guard(async () => {
-      const blocked = await initPreflight(cwd, trunk, branches);
+      let base = trunk;
+      if (trunkIsRemote) {
+        // A stack does not have to sit on the default branch, and the branch it
+        // sits on often belongs to someone else and exists only on the remote.
+        // gh-stack records a trunk by name and initPreflight resolves it
+        // locally, so the local branch has to exist — and be current — first.
+        // Failing here aborts before `gh stack init` runs; nothing is
+        // half-created.
+        const resolved = await this.resolveRemoteBase(cwd, trunk);
+        if (!resolved) {
+          return;
+        }
+        base = resolved;
+      }
+
+      const blocked = await initPreflight(cwd, base, branches);
       if (blocked) {
         void vscode.window.showErrorMessage(`Restack: ${blocked}`);
         return;
       }
 
-      this.log.appendLine(`Creating a stack: gh ${initArgs(trunk, branches).join(' ')}`);
-      const failure = await runInit(cwd, this.ghPath(), trunk, branches);
+      this.log.appendLine(`Creating a stack: gh ${initArgs(base, branches).join(' ')}`);
+      const failure = await runInit(cwd, this.ghPath(), base, branches);
       if (failure) {
         void vscode.window.showErrorMessage(`Restack: ${failure}`);
         this.log.show(true);
@@ -661,6 +776,348 @@ class StackViewProvider implements vscode.WebviewViewProvider {
       await this.runner.start(cwd, this.ghPath(), stack, plan, order, 'local');
       await this.refresh();
     });
+  }
+
+  /**
+   * Go and ask the remote, then re-render.
+   *
+   * The only place Restack initiates network traffic on its own. Everything the
+   * view shows about the remote — the ahead/behind counts, the sync banner, the
+   * clobber warning — is read from local refs, so it is only ever as fresh as
+   * the last fetch. This is the button that makes it fresh.
+   */
+  async fetch(): Promise<void> {
+    const cwd = this.workspacePath();
+    if (!cwd) {
+      return;
+    }
+
+    if (this.runner.active) {
+      void vscode.window.showWarningMessage(
+        'Restack: an apply is in progress. Finish or dismiss it first.',
+      );
+      return;
+    }
+
+    await this.guard(async () => {
+      const remote = await detectRemote(cwd, this.lastStack?.trunk ?? 'main');
+      if (!remote) {
+        void vscode.window.showInformationMessage('Restack: no remote to fetch from.');
+        return;
+      }
+
+      const failure = await vscode.window.withProgress(
+        { location: { viewId: 'restack.stackView' }, title: `Fetching ${remote}…` },
+        () => fetchRemote(cwd, remote),
+      );
+      if (failure) {
+        void vscode.window.showErrorMessage(`Restack: ${failure}`);
+        this.log.show(true);
+      }
+
+      // Either way: a partial fetch still moved some refs, and the counts
+      // should reflect what is actually on disk.
+      await this.refresh();
+    });
+  }
+
+  /**
+   * Bring the stack up to date with a trunk that has moved.
+   *
+   * Fetches first, always. A sync plan built from stale refs would fast-forward
+   * the trunk to a commit that is no longer its tip, and the whole cascade would
+   * replay onto the wrong place — so the network call is part of the action
+   * rather than something the user is expected to have done first.
+   *
+   * The stack is re-read after the fetch for the same reason the plan is built
+   * after it: `gh stack view`'s `needsRebase` and recorded bases both describe
+   * the pre-fetch world.
+   *
+   * Everything after that is an ordinary apply — snapshot, conflict pause, undo,
+   * reload persistence — because syncPlan produces an ordinary Plan.
+   */
+  /** Palette entry point: the view may never have loaded a stack. */
+  async syncStack(): Promise<void> {
+    if (!this.lastStack) {
+      await this.refresh();
+    }
+    if (!this.lastStack) {
+      void vscode.window.showInformationMessage('Restack: no stack here to sync.');
+      return;
+    }
+    await this.handleSyncStack();
+  }
+
+  private async handleSyncStack(): Promise<void> {
+    const cwd = this.workspacePath();
+    if (!cwd || !this.lastStack) {
+      return;
+    }
+
+    if (this.runner.active) {
+      void vscode.window.showWarningMessage(
+        'Restack: an apply is in progress. Use the buttons in the plan panel.',
+      );
+      return;
+    }
+
+    await this.guard(async () => {
+      const remote = await detectRemote(cwd, this.lastStack?.trunk ?? 'main');
+      if (!remote) {
+        void vscode.window.showErrorMessage('Restack: no remote to sync with.');
+        return;
+      }
+
+      const failure = await vscode.window.withProgress(
+        { location: { viewId: 'restack.stackView' }, title: `Fetching ${remote}…` },
+        () => fetchRemote(cwd, remote),
+      );
+      if (failure) {
+        void vscode.window.showErrorMessage(`Restack: ${failure}`);
+        this.log.show(true);
+        return;
+      }
+
+      // Re-read against post-fetch refs before planning anything.
+      await this.refresh();
+      const stack = this.lastStack;
+      const remoteState = this.lastRemote;
+      if (!stack) {
+        return;
+      }
+
+      if (!remoteState || remoteState.trunk.behind === 0) {
+        void vscode.window.showInformationMessage(
+          `Restack: ${stack.trunk} is already up to date with ${remote}.`,
+        );
+        return;
+      }
+
+      const onTrunk = stack.currentBranch === stack.trunk;
+      const plan = syncPlan(stack, remote, onTrunk);
+      if (plan.isNoop) {
+        void vscode.window.showInformationMessage('Restack: nothing to replay.');
+        return;
+      }
+
+      const order = stack.branches.map((b) => b.name);
+      const blocked = await preflight(cwd, stack, 'local', order);
+      if (blocked) {
+        void vscode.window.showErrorMessage(`Restack: ${blocked}`);
+        return;
+      }
+
+      const rebases = plan.steps.filter((s) => s.kind === 'rebase').map((s) => s.branch ?? '');
+      const behind = remoteState.trunk.behind;
+      const confirmed = await vscode.window.showWarningMessage(
+        `Fast-forward ${stack.trunk} and replay ${rebases.length} branch${rebases.length === 1 ? '' : 'es'}?`,
+        {
+          modal: true,
+          detail:
+            `${stack.trunk} is ${behind} commit${behind === 1 ? '' : 's'} behind ` +
+            `${remote}/${stack.trunk}. Restack will fast-forward it, then replay ` +
+            `${rebases.join(', ')} on top.\n\nThis rewrites local history. Every branch SHA ` +
+            `is snapshotted first and can be rolled back. Nothing is pushed.`,
+        },
+        'Sync Stack',
+      );
+      if (confirmed !== 'Sync Stack') {
+        return;
+      }
+
+      this.lastPlan = plan;
+      this.lastOrder = order;
+      this.post({ type: 'plan', plan });
+
+      await this.runner.start(cwd, this.ghPath(), stack, plan, order, 'local');
+      await this.refresh();
+    });
+  }
+
+  /**
+   * Move the whole stack onto a different base.
+   *
+   * The counterpart to picking a base at init time: a stack built on a
+   * colleague's branch has to move to `main` once that branch merges, and
+   * before this there was no way to do it short of unstacking and starting
+   * over.
+   *
+   * The entire change is `{...stack, trunk: base}` — computePlan reads the trunk
+   * from the stack it is handed, and writeMetadata records the trunk from the
+   * stack the session was started with. Passing the modified stack to both is
+   * what makes this work; there is no new rebase arithmetic.
+   */
+  private async handleChangeBase(base: string, isRemote?: boolean): Promise<void> {
+    const cwd = this.workspacePath();
+    const stack = this.lastStack;
+    if (!cwd || !stack) {
+      return;
+    }
+
+    if (this.runner.active) {
+      void vscode.window.showWarningMessage(
+        'Restack: an apply is in progress. Finish or dismiss it first.',
+      );
+      return;
+    }
+
+    await this.guard(async () => {
+      let local = base;
+      if (isRemote) {
+        // Checked before the branch is created, not after: a name already in
+        // the stack is a refusal, and creating it first would leave a branch
+        // behind for a change that never happens.
+        local = localNameFor(base, await listRemotes(cwd));
+        if (stack.branches.some((b) => b.name === local)) {
+          void vscode.window.showErrorMessage(
+            `Restack: ${local} is in this stack, so it cannot also be its base.`,
+          );
+          return;
+        }
+        // Fetches, creates or catches up the local branch, and refuses if it
+        // has drifted. gh-stack records a trunk by name and every check below
+        // resolves it locally, so this comes before all of them.
+        const resolved = await this.resolveRemoteBase(cwd, base);
+        if (!resolved) {
+          return;
+        }
+        local = resolved;
+      }
+
+      if (local === stack.trunk) {
+        void vscode.window.showInformationMessage(
+          `Restack: this stack is already based on ${local}.`,
+        );
+        return;
+      }
+      if (stack.branches.some((b) => b.name === local)) {
+        void vscode.window.showErrorMessage(
+          `Restack: ${local} is in this stack, so it cannot also be its base.`,
+        );
+        return;
+      }
+
+      const rebased: Stack = { ...stack, trunk: local };
+      const order = stack.branches.map((b) => b.name);
+      const plan = changeBasePlan(stack, local);
+      if (plan.isNoop) {
+        void vscode.window.showInformationMessage('Restack: nothing to replay.');
+        return;
+      }
+
+      // Against the *new* trunk: its merge-base check is exactly the question
+      // of whether these branches can be replayed onto it at all.
+      const blocked = await preflight(cwd, rebased, 'local', order);
+      if (blocked) {
+        void vscode.window.showErrorMessage(`Restack: ${blocked}`);
+        return;
+      }
+
+      // A *local* base gets no fetch above, so it may be well behind its own
+      // upstream — and the stack is about to be replayed onto whatever commit
+      // it is sitting on. Stated rather than refused: basing on a deliberately
+      // older commit is legitimate, and Sync stack is the fix if it was not.
+      const staleness = isRemote ? undefined : await this.baseStaleness(cwd, local);
+
+      const bottom = order[0];
+      const withPr = stack.branches[0]?.prNumber;
+      const confirmed = await vscode.window.showWarningMessage(
+        `Re-base this stack from ${stack.trunk} onto ${local}?`,
+        {
+          modal: true,
+          detail:
+            `Replays ${bottom} onto ${local}, and cascades every branch above it. ` +
+            `.git/gh-stack is updated to record ${local} as the trunk.\n\n` +
+            (staleness ? `${staleness}\n\n` : '') +
+            (withPr
+              ? `#${withPr} currently targets ${stack.trunk}; the next \`gh stack submit\` ` +
+                `will retarget it to ${local}.\n\n`
+              : '') +
+            `This rewrites local history. Every branch SHA is snapshotted first and can ` +
+            `be rolled back. Nothing is pushed.`,
+        },
+        'Change Base',
+      );
+      if (confirmed !== 'Change Base') {
+        return;
+      }
+
+      this.lastPlan = plan;
+      this.lastOrder = order;
+      this.post({ type: 'plan', plan });
+
+      // The modified stack, not the original: this is what writeMetadata reads
+      // the trunk from, and so what lands in .git/gh-stack.
+      await this.runner.start(cwd, this.ghPath(), rebased, plan, order, 'local');
+      await this.refresh();
+    });
+  }
+
+  /**
+   * A sentence about a local base that has fallen behind its upstream, or
+   * nothing when it has not.
+   *
+   * Local refs only, so this is as stale as the last fetch — which is exactly
+   * what it is warning about, and why it is worded as of-the-last-fetch rather
+   * than as fact.
+   */
+  private async baseStaleness(cwd: string, base: string): Promise<string | undefined> {
+    const tracking = (await readAllTracking(cwd)).get(base);
+    if (!tracking || tracking.gone || tracking.behind === 0) {
+      return undefined;
+    }
+    return (
+      `Note: ${base} is ${tracking.behind} commit${tracking.behind === 1 ? '' : 's'} behind ` +
+      `${tracking.upstream ?? 'its upstream'} as of the last fetch, so the stack will land on ` +
+      `that older commit. Sync stack afterwards to catch it up.`
+    );
+  }
+
+  /** Palette entry point: pick a base rather than being handed one. */
+  async changeBase(): Promise<void> {
+    if (!this.lastStack) {
+      await this.refresh();
+    }
+    const cwd = this.workspacePath();
+    const stack = this.lastStack;
+    if (!cwd || !stack) {
+      void vscode.window.showInformationMessage('Restack: no stack here to re-base.');
+      return;
+    }
+
+    const inStack = new Set(stack.branches.map((b) => b.name));
+    const [locals, remotes] = await Promise.all([
+      listLocalBranches(cwd),
+      listRemoteBranches(cwd),
+    ]);
+    const remoteNames = await listRemotes(cwd);
+
+    const items: Array<vscode.QuickPickItem & { base: string; isRemote: boolean }> = [
+      ...locals
+        .filter((n) => !inStack.has(n) && n !== stack.trunk)
+        .map((n) => ({ base: n, isRemote: false, label: `$(git-branch) ${n}` })),
+      ...remotes
+        .filter((n) => !inStack.has(localNameFor(n, remoteNames)))
+        .map((n) => ({
+          base: n,
+          isRemote: true,
+          label: `$(cloud) ${n}`,
+          description: 'creates a local tracking branch',
+        })),
+    ];
+
+    if (items.length === 0) {
+      void vscode.window.showInformationMessage('Restack: no other branch to base this stack on.');
+      return;
+    }
+
+    const picked = await vscode.window.showQuickPick(items, {
+      title: `Re-base this stack (currently on ${stack.trunk})`,
+      placeHolder: 'Pick the branch the bottom of the stack should sit on',
+    });
+    if (picked) {
+      await this.handleChangeBase(picked.base, picked.isRemote);
+    }
   }
 
   /**
@@ -960,6 +1417,9 @@ class StackViewProvider implements vscode.WebviewViewProvider {
     let result: StackResult = await readStack(cwd, this.ghPath());
     this.lastStack = result.kind === 'ok' ? result.stack : undefined;
     this.updateStatus(this.lastStack);
+    // Local ref reads only — no network — so this is safe on the .git/HEAD
+    // watcher path, which fires on every checkout and every rebase step.
+    this.lastRemote = this.lastStack ? await readRemoteState(cwd, this.lastStack) : undefined;
     // The plan described the pre-refresh order; holding on to it would let a
     // later apply run stale commands.
     this.lastPlan = undefined;
@@ -974,16 +1434,22 @@ class StackViewProvider implements vscode.WebviewViewProvider {
     if (this.lastStack) {
       candidates = await readCandidates(cwd, this.lastStack);
     } else if (result.kind === 'no-stack') {
-      const [{ trunk, localBranches }, stacks] = await Promise.all([
+      const [{ trunk, localBranches, remoteBranches }, stacks] = await Promise.all([
         detectTrunk(cwd),
         readLocalStacks(cwd),
       ]);
       candidates = await readBranchCandidates(cwd, trunk, new Set(stacks.flatMap((s) => s.branches)));
-      result = { ...result, trunk, localBranches, stacks };
+      result = { ...result, trunk, localBranches, remoteBranches, stacks };
     }
     this.lastCandidates = candidates;
 
-    this.post({ type: 'stack', result, candidates, canPublish: await hasOrigin(cwd) });
+    this.post({
+      type: 'stack',
+      result,
+      candidates,
+      canPublish: await hasOrigin(cwd),
+      remote: this.lastRemote,
+    });
   }
 
   private html(webview: vscode.Webview): string {
@@ -1077,6 +1543,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('restack.refresh', () => provider.refresh()),
     vscode.commands.registerCommand('restack.pushSubmit', () => provider.pushSubmit()),
     vscode.commands.registerCommand('restack.rebaseStack', () => provider.rebaseStack()),
+    vscode.commands.registerCommand('restack.fetch', () => provider.fetch()),
+    vscode.commands.registerCommand('restack.syncStack', () => provider.syncStack()),
+    vscode.commands.registerCommand('restack.changeBase', () => provider.changeBase()),
     vscode.commands.registerCommand('restack.removeStack', () => provider.removeStack()),
     vscode.commands.registerCommand('restack.checkoutBranch', () => provider.checkoutBranch()),
     vscode.commands.registerCommand('restack.showLog', () => log.show()),

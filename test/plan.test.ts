@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parseStack } from '../src/parse.ts';
-import { computePlan } from '../src/plan.ts';
+import { changeBasePlan, computePlan, syncPlan } from '../src/plan.ts';
 import type { CandidateBranch } from '../src/model.ts';
 
 /** Captured from a real `gh stack view --json` run (gh-stack v0.1.0). */
@@ -303,4 +303,96 @@ test('force does not change what a reorder plans', () => {
     forced.steps.map((s) => s.command),
     plain.steps.map((s) => s.command),
   );
+});
+
+test('supplemental drift replays a branch gh-stack has not flagged', () => {
+  // The post-fetch case: the trunk moved, so the bottom branch is no longer on
+  // it — but `gh stack view` ran before the fetch and reports needsRebase
+  // false for everything.
+  const stack = parseStack(fixture);
+  const order = stack.branches.map((b) => b.name);
+  const [auth, api, ui] = stack.branches;
+
+  const plan = computePlan(stack, order, [], { force: true, drifted: ['feat/auth'] });
+  assert.equal(plan.isNoop, false);
+
+  const rebases = plan.steps.filter((s) => s.kind === 'rebase');
+  // The named branch, and the cascade above it — the same rule needsRebase gets.
+  assert.deepEqual(rebases.map((s) => s.branch), ['feat/auth', 'feat/api', 'feat/ui']);
+  assert.equal(rebases[0].command, `git rebase --onto main ${auth.base} feat/auth`);
+  assert.equal(rebases[1].command, `git rebase --onto feat/auth ${api.base} feat/api`);
+  assert.equal(rebases[2].command, `git rebase --onto feat/api ${ui.base} feat/ui`);
+});
+
+test('drifted is inert without force', () => {
+  // force is the switch; drifted only says which branches it should also cover.
+  // A reorder must never quietly replay extra branches because the host passed
+  // a list it computed for a different purpose.
+  const stack = parseStack(fixture);
+  const order = stack.branches.map((b) => b.name);
+  assert.equal(computePlan(stack, order, [], { drifted: ['feat/auth'] }).isNoop, true);
+});
+
+test('syncPlan fast-forwards the trunk, then replays the whole stack', () => {
+  const stack = parseStack(fixture);
+  const [auth, api, ui] = stack.branches;
+
+  const plan = syncPlan(stack, 'origin', false);
+  assert.deepEqual(
+    plan.steps.map((s) => s.kind),
+    ['trunk', 'rebase', 'rebase', 'rebase', 'metadata', 'push', 'submit'],
+  );
+
+  // The trunk moves first: everything after it replays onto the new tip.
+  assert.equal(plan.steps[0].command, 'git fetch origin main:main');
+
+  const rebases = plan.steps.filter((s) => s.kind === 'rebase');
+  assert.deepEqual(rebases.map((s) => s.branch), ['feat/auth', 'feat/api', 'feat/ui']);
+  // The load-bearing part. feat/auth's anchor is its recorded base — the trunk
+  // SHA from *before* the fast-forward — so the replay takes its own commits
+  // and not the ones the trunk just gained. `--onto main main feat/auth` would
+  // resolve both ends to the new tip and replay nothing.
+  assert.equal(rebases[0].command, `git rebase --onto main ${auth.base} feat/auth`);
+  assert.equal(rebases[1].command, `git rebase --onto feat/auth ${api.base} feat/api`);
+  assert.equal(rebases[2].command, `git rebase --onto feat/api ${ui.base} feat/ui`);
+});
+
+test('syncPlan merges instead of fetching when the trunk is checked out', () => {
+  // git refuses `fetch <remote> <branch>:<branch>` onto a checked-out branch,
+  // so the same fast-forward has to be spelled differently.
+  const plan = syncPlan(parseStack(fixture), 'upstream', true);
+  assert.equal(plan.steps[0].command, 'git merge --ff-only upstream/main');
+  assert.deepEqual(plan.steps[0].exec, {
+    file: 'git',
+    args: ['merge', '--ff-only', 'upstream/main'],
+  });
+});
+
+test('syncPlan on an empty stack has nothing to fast-forward for', () => {
+  const empty = { ...parseStack(fixture), branches: [] };
+  const plan = syncPlan(empty, 'origin', false);
+  assert.equal(plan.isNoop, true);
+  // No trunk step either: moving the trunk is only worth doing as the first
+  // half of a replay, and there is nothing to replay.
+  assert.deepEqual(plan.steps, []);
+});
+
+test('changeBasePlan re-targets the bottom branch and cascades', () => {
+  const stack = parseStack(fixture);
+  const [auth, api, ui] = stack.branches;
+
+  const plan = changeBasePlan(stack, 'release/2.0');
+  const rebases = plan.steps.filter((s) => s.kind === 'rebase');
+  assert.deepEqual(rebases.map((s) => s.branch), ['feat/auth', 'feat/api', 'feat/ui']);
+
+  // Only the bottom branch's target changes; the ones above still stack on
+  // their own parents, and every anchor is still the recorded pre-rebase SHA.
+  assert.equal(rebases[0].command, `git rebase --onto release/2.0 ${auth.base} feat/auth`);
+  assert.equal(rebases[1].command, `git rebase --onto feat/auth ${api.base} feat/api`);
+  assert.equal(rebases[2].command, `git rebase --onto feat/api ${ui.base} feat/ui`);
+
+  // No trunk step: the new base is a branch that already exists as it is.
+  assert.ok(!plan.steps.some((s) => s.kind === 'trunk'));
+  // The metadata write is what records the new trunk in .git/gh-stack.
+  assert.ok(plan.steps.some((s) => s.kind === 'metadata'));
 });

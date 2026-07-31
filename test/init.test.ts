@@ -12,6 +12,7 @@ import {
   unstackPreflight,
 } from '../src/init.ts';
 import { addArgs, initArgs, unstackArgs } from '../src/plan.ts';
+import { ensureBaseBranch } from '../src/remote.ts';
 
 /**
  * Like apply.test.ts, these run against real repositories. The whole job of
@@ -385,4 +386,55 @@ test('unstackPreflight refuses outside a git repository', async (t) => {
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
 
   assert.match((await unstackPreflight(cwd, 'local')) ?? '', /not a git repository/i);
+});
+
+test('detectTrunk reports remote-only branches as candidate bases', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  // A colleague's branch that exists only on the remote — the case the base
+  // picker is for, and the one a local-branches-only list cannot offer.
+  branch(cwd, 'theirs');
+  git(cwd, 'update-ref', 'refs/remotes/origin/theirs', git(cwd, 'rev-parse', 'theirs'));
+  git(cwd, 'update-ref', 'refs/remotes/origin/main', git(cwd, 'rev-parse', 'main'));
+  git(cwd, 'branch', '-D', 'theirs');
+  git(cwd, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');
+
+  const info = await detectTrunk(cwd);
+  assert.equal(info.trunk, 'main');
+  assert.deepEqual(info.localBranches, ['main']);
+  // Qualified, and without the HEAD symref — which shortens to bare `origin`
+  // and would otherwise show up as a branch you could base a stack on.
+  assert.deepEqual(info.remoteBranches.sort(), ['origin/main', 'origin/theirs']);
+});
+
+test('detectTrunk reports no remote branches when there is no remote', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  assert.deepEqual((await detectTrunk(cwd)).remoteBranches, []);
+});
+
+test('a tracking branch created from a remote ref passes initPreflight', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  branch(cwd, 'feat/mine');
+  branch(cwd, 'theirs');
+  git(cwd, 'update-ref', 'refs/remotes/origin/theirs', git(cwd, 'rev-parse', 'theirs'));
+  git(cwd, 'branch', '-D', 'theirs');
+  // A configured remote, not just the refs: `git branch --track` resolves the
+  // starting point through the fetch refspec and refuses without one.
+  git(cwd, 'remote', 'add', 'origin', 'https://example.invalid/repo.git');
+
+  // Before the local branch exists, gh-stack would record a trunk that does
+  // not resolve — `gh stack init --base` does not validate it, so this guard
+  // is the only thing standing between a typo and a broken stack.
+  assert.match(
+    (await initPreflight(cwd, 'theirs', ['feat/mine'])) ?? '',
+    /Trunk theirs does not exist locally/,
+  );
+
+  assert.deepEqual(await ensureBaseBranch(cwd, 'theirs', 'origin/theirs'), { kind: 'created' });
+  assert.equal(await initPreflight(cwd, 'theirs', ['feat/mine']), undefined);
 });
