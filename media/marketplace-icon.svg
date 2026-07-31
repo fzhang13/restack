@@ -1,6 +1,16 @@
 <svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
-  <rect width="128" height="128" rx="24" fill="#1f2430"/>
-  <rect x="24" y="26" width="80" height="20" rx="5" fill="#7aa2f7"/>
-  <rect x="24" y="54" width="80" height="20" rx="5" fill="#7aa2f7" opacity="0.65"/>
-  <rect x="24" y="82" width="80" height="20" rx="5" fill="#7aa2f7" opacity="0.4"/>
+  <!-- Source for media/icon.png. Rasterize with: node media/build-icon.mjs
+       Three stacked bars, brightest on top, with the top one shifted to read as
+       mid-move. The trunk line beneath is what makes it a stack rather than a
+       list. -->
+  <rect width="128" height="128" rx="26" fill="#161b22"/>
+
+  <!-- The branch being dragged: offset right, full-strength, with a handle. -->
+  <rect x="34" y="22" width="72" height="20" rx="6" fill="#79b8ff"/>
+  <rect x="24" y="54" width="72" height="20" rx="6" fill="#79b8ff" opacity="0.62"/>
+  <rect x="24" y="86" width="72" height="20" rx="6" fill="#79b8ff" opacity="0.38"/>
+
+  <!-- Trunk rail the stack sits on. -->
+  <rect x="14" y="22" width="5" height="84" rx="2.5" fill="#3fb950" opacity="0.85"/>
+  <circle cx="16.5" cy="112" r="6" fill="#3fb950"/>
 </svg>

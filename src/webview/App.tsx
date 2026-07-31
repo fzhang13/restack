@@ -144,19 +144,23 @@ function BranchRow({ branch, draggable, moved, colorIndex, onNudge, onCheckout }
         .join(' ')}
       title={onCheckout ? `${branch.name} — double-click to check out` : branch.name}
       onDoubleClick={onCheckout}
-      // Alt+arrows are the discoverable alternative to dnd-kit's own
-      // space-then-arrows keyboard drag, which needs the row focused first.
-      onKeyDown={(event) => {
-        if (!onNudge || !event.altKey) {
-          return;
-        }
-        if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
-          event.preventDefault();
-          onNudge(event.key === 'ArrowUp' ? -1 : 1);
-        }
-      }}
       {...attributes}
       {...listeners}
+      // Alt+arrows are the discoverable alternative to dnd-kit's own
+      // space-then-arrows keyboard drag, which needs the row focused first.
+      //
+      // This must come *after* the listeners spread: dnd-kit's KeyboardSensor
+      // supplies its own `onKeyDown`, so an earlier handler here is silently
+      // overwritten by it. Unhandled keys are forwarded on, leaving dnd-kit's
+      // space-to-lift path intact.
+      onKeyDown={(event) => {
+        if (onNudge && event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+          event.preventDefault();
+          onNudge(event.key === 'ArrowUp' ? -1 : 1);
+          return;
+        }
+        listeners?.onKeyDown?.(event);
+      }}
     >
       <Node index={colorIndex} />
       <span className="name">{branch.name}</span>

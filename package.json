@@ -1,11 +1,15 @@
 {
   "name": "restack",
   "displayName": "Restack",
-  "description": "Visualize and rearrange GitHub stacked pull requests by drag and drop.",
-  "version": "0.1.0",
+  "description": "Drag to reorder GitHub stacked PRs. Shows the exact git rebase plan before running it, and can undo. Requires the gh CLI with gh-stack.",
+  "version": "0.1.1",
   "publisher": "felixzhang",
   "license": "MIT",
   "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#161b22",
+    "theme": "dark"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/fzhang13/restack.git"
@@ -23,10 +27,13 @@
   ],
   "keywords": [
     "stacked pull requests",
+    "stacked prs",
     "gh-stack",
     "git",
     "rebase",
-    "github"
+    "github",
+    "pull request",
+    "graphite"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -101,6 +108,7 @@
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types test/*.test.ts",
+    "media": "node media/build-icon.mjs && npm run build && node test/harness/build-driver.mjs && node media/build-screenshot.mjs",
     "package": "vsce package",
     "publish:vsce": "vsce publish",
     "publish:ovsx": "ovsx publish",
