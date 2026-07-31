@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ApplyRunner, hasOrigin, preflight } from '../src/apply.ts';
-import { computePlan } from '../src/plan.ts';
+import { changeBasePlan, computePlan, syncPlan } from '../src/plan.ts';
 import type { ApplyProgress, CandidateBranch, Stack } from '../src/model.ts';
 import type { PersistedSession } from '../src/apply.ts';
 
@@ -746,4 +746,229 @@ test('a forced plan builds the stack an init only recorded', async (t) => {
   assert.equal(meta.stacks[0].branches[0].base, git(cwd, 'rev-parse', 'main'));
   assert.equal(meta.stacks[0].branches[1].base, git(cwd, 'rev-parse', 'feat/auth'));
   assert.equal(meta.stacks[0].branches[2].base, git(cwd, 'rev-parse', 'feat/api'));
+});
+
+/**
+ * The same stack, plus a bare origin every branch tracks.
+ *
+ * Returns both paths: the tests below simulate a colleague by committing
+ * directly into a second clone and pushing, which is the only way to produce
+ * the state that matters — a remote-tracking ref we are behind.
+ */
+function makeRemoteRepo(): { cwd: string; origin: string } {
+  const cwd = makeRepo();
+  const origin = mkdtempSync(join(tmpdir(), 'restack-origin-'));
+  git(origin, 'init', '--bare', '-b', 'main');
+
+  git(cwd, 'remote', 'add', 'origin', origin);
+  git(cwd, 'push', '-u', 'origin', 'main', ...ORDER);
+  return { cwd, origin };
+}
+
+/** A second clone, standing in for whoever else pushes to these branches. */
+function colleague(origin: string): string {
+  const cwd = mkdtempSync(join(tmpdir(), 'restack-them-'));
+  git(cwd, 'clone', origin, cwd);
+  git(cwd, 'config', 'user.email', 'them@example.com');
+  git(cwd, 'config', 'user.name', 'Someone Else');
+  git(cwd, 'config', 'commit.gpgsign', 'false');
+  return cwd;
+}
+
+test('preflight refuses to rewrite a branch that is behind its upstream', async (t) => {
+  const { cwd, origin } = makeRemoteRepo();
+  const them = colleague(origin);
+  t.after(() => [cwd, origin, them].forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+  // Someone else pushes to a branch in our stack.
+  git(them, 'checkout', 'feat/api');
+  commit(them, 'theirs.txt', 'theirs\n', 'feat: their work');
+  git(them, 'push', 'origin', 'feat/api');
+
+  // Until we fetch, nothing here knows: the remote-tracking ref is stale and
+  // an apply would happily proceed.
+  assert.equal(await preflight(cwd, readStackFrom(cwd), 'local'), undefined);
+
+  git(cwd, 'fetch', 'origin');
+
+  // Now it is refusable, and refused. `gh stack push` force-pushes with a
+  // lease against that ref — once it is current, the lease is satisfied and
+  // their commit is overwritten with no warning at all.
+  const blocked = await preflight(cwd, readStackFrom(cwd), 'local');
+  assert.match(blocked ?? '', /feat\/api is 1 behind origin\/feat\/api/);
+  assert.match(blocked ?? '', /force-pushes/);
+});
+
+test('preflight allows a branch whose upstream was deleted', async (t) => {
+  const { cwd, origin } = makeRemoteRepo();
+  t.after(() => [cwd, origin].forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+  // The ordinary aftermath of a merged PR: the branch is gone from the remote
+  // but the local upstream config remains. Refusing here would block every
+  // stack that had ever landed a branch.
+  git(cwd, 'push', 'origin', '--delete', 'feat/auth');
+  git(cwd, 'fetch', '--prune', 'origin');
+
+  assert.equal(await preflight(cwd, readStackFrom(cwd), 'local'), undefined);
+});
+
+test('preflight ignores branches outside the order being applied', async (t) => {
+  const { cwd, origin } = makeRemoteRepo();
+  const them = colleague(origin);
+  t.after(() => [cwd, origin, them].forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+  // A branch that is behind but is *not* being rewritten is not a hazard —
+  // only the branches this apply force-pushes matter.
+  git(them, 'checkout', '-b', 'unrelated', 'main');
+  commit(them, 'other.txt', 'other\n', 'chore: unrelated');
+  git(them, 'push', 'origin', 'unrelated');
+  git(cwd, 'fetch', 'origin');
+  git(cwd, 'branch', '--track', 'unrelated', 'origin/unrelated');
+  git(them, 'push', 'origin', 'HEAD:unrelated', '--force');
+  commit(them, 'other.txt', 'more\n', 'chore: more');
+  git(them, 'push', 'origin', 'unrelated');
+  git(cwd, 'fetch', 'origin');
+
+  assert.equal(await preflight(cwd, readStackFrom(cwd), 'local', ORDER), undefined);
+  assert.match(
+    (await preflight(cwd, readStackFrom(cwd), 'local', [...ORDER, 'unrelated'])) ?? '',
+    /unrelated is 1 behind origin\/unrelated/,
+  );
+});
+
+test('syncing a moved trunk replays the stack onto it without absorbing its commits', async (t) => {
+  const { cwd, origin } = makeRemoteRepo();
+  const them = colleague(origin);
+  t.after(() => [cwd, origin, them].forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+  // Two commits land on the trunk while we were working.
+  git(them, 'checkout', 'main');
+  commit(them, 'trunk-a.txt', 'a\n', 'chore: trunk a');
+  commit(them, 'trunk-b.txt', 'b\n', 'chore: trunk b');
+  git(them, 'push', 'origin', 'main');
+
+  git(cwd, 'fetch', 'origin');
+  const stack = readStackFrom(cwd);
+  // HEAD is on feat/ui, so the trunk is not checked out: the fetch-refspec
+  // form of the fast-forward.
+  const plan = syncPlan(stack, 'origin', false);
+  assert.equal(plan.steps[0].command, 'git fetch origin main:main');
+
+  assert.equal(await preflight(cwd, stack, 'local', ORDER), undefined);
+
+  const { runner, states } = collect();
+  await runner.start(cwd, 'gh', stack, plan, ORDER, 'local');
+
+  assert.equal(states.at(-1)!.phase, 'done');
+  assert.equal(git(cwd, 'rev-parse', 'main'), git(cwd, 'rev-parse', 'origin/main'));
+
+  // The whole point. Each branch carries its own work plus everything below
+  // it — and *not* the trunk's two commits, which are now behind main and so
+  // no longer show up in `main..branch` at all.
+  assert.deepEqual(commitsOn(cwd, 'feat/auth'), ['feat: add auth layer']);
+  assert.deepEqual(commitsOn(cwd, 'feat/api'), [
+    'feat: add api routes',
+    'feat: add auth layer',
+  ]);
+  assert.deepEqual(commitsOn(cwd, 'feat/ui'), [
+    'feat: add ui components',
+    'feat: add api routes',
+    'feat: add auth layer',
+  ]);
+  // And the trunk's commits really are in there, rather than having been
+  // skipped over by a rebase anchored to the wrong SHA.
+  assert.doesNotThrow(() => git(cwd, 'merge-base', '--is-ancestor', 'main', 'feat/auth'));
+
+  const meta = JSON.parse(readFileSync(join(cwd, '.git', 'gh-stack'), 'utf8'));
+  assert.equal(meta.stacks[0].branches[0].base, git(cwd, 'rev-parse', 'main'));
+});
+
+test('syncing with the trunk checked out merges rather than fetching onto it', async (t) => {
+  const { cwd, origin } = makeRemoteRepo();
+  const them = colleague(origin);
+  t.after(() => [cwd, origin, them].forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+  git(them, 'checkout', 'main');
+  commit(them, 'trunk-a.txt', 'a\n', 'chore: trunk a');
+  git(them, 'push', 'origin', 'main');
+
+  git(cwd, 'checkout', 'main');
+  git(cwd, 'fetch', 'origin');
+
+  const stack = readStackFrom(cwd);
+  const plan = syncPlan(stack, 'origin', true);
+  assert.equal(plan.steps[0].command, 'git merge --ff-only origin/main');
+
+  const { runner, states } = collect();
+  await runner.start(cwd, 'gh', stack, plan, ORDER, 'local');
+
+  // git refuses `fetch origin main:main` while main is checked out; the merge
+  // form is what makes this work at all.
+  assert.equal(states.at(-1)!.phase, 'done');
+  assert.equal(git(cwd, 'rev-parse', 'main'), git(cwd, 'rev-parse', 'origin/main'));
+  assert.deepEqual(commitsOn(cwd, 'feat/auth'), ['feat: add auth layer']);
+});
+
+test('changing the base moves the stack and records the new trunk', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  // A colleague's branch, sitting on main with a commit of its own.
+  git(cwd, 'checkout', '-b', 'theirs', 'main');
+  commit(cwd, 'theirs.txt', 'theirs\n', 'feat: their groundwork');
+  git(cwd, 'checkout', 'feat/ui');
+
+  const stack = readStackFrom(cwd);
+  const rebased: Stack = { ...stack, trunk: 'theirs' };
+  const plan = changeBasePlan(stack, 'theirs');
+
+  assert.equal(await preflight(cwd, rebased, 'local', ORDER), undefined);
+
+  const { runner, states } = collect();
+  // The *modified* stack: this is what writeMetadata reads the trunk from.
+  await runner.start(cwd, 'gh', rebased, plan, ORDER, 'local');
+
+  assert.equal(states.at(-1)!.phase, 'done');
+
+  // The bottom branch now sits on theirs, and carries its commit.
+  assert.doesNotThrow(() => git(cwd, 'merge-base', '--is-ancestor', 'theirs', 'feat/auth'));
+  assert.deepEqual(commitsOn(cwd, 'feat/auth'), [
+    'feat: add auth layer',
+    'feat: their groundwork',
+  ]);
+  // Each branch still holds exactly its own work relative to the one below.
+  assert.equal(git(cwd, 'log', '--format=%s', 'feat/auth..feat/api'), 'feat: add api routes');
+  assert.equal(git(cwd, 'log', '--format=%s', 'feat/api..feat/ui'), 'feat: add ui components');
+
+  // Without this, `gh stack submit` retargets the bottom PR from stale data
+  // and points it back at main.
+  const meta = JSON.parse(readFileSync(join(cwd, '.git', 'gh-stack'), 'utf8'));
+  assert.equal(meta.stacks[0].trunk.branch, 'theirs');
+  assert.equal(meta.stacks[0].trunk.head, git(cwd, 'rev-parse', 'theirs'));
+  assert.equal(meta.stacks[0].branches[0].base, git(cwd, 'rev-parse', 'theirs'));
+});
+
+test('undoing a base change puts every branch and the trunk record back', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  git(cwd, 'checkout', '-b', 'theirs', 'main');
+  commit(cwd, 'theirs.txt', 'theirs\n', 'feat: their groundwork');
+  git(cwd, 'checkout', 'feat/ui');
+
+  const before = Object.fromEntries(ORDER.map((b) => [b, git(cwd, 'rev-parse', b)]));
+  const stack = readStackFrom(cwd);
+  const rebased: Stack = { ...stack, trunk: 'theirs' };
+
+  const { runner } = collect();
+  await runner.start(cwd, 'gh', rebased, changeBasePlan(stack, 'theirs'), ORDER, 'local');
+  await runner.abort();
+
+  for (const branch of ORDER) {
+    assert.equal(git(cwd, 'rev-parse', branch), before[branch], `${branch} restored`);
+  }
+  // The metadata is part of what the snapshot covers, or an undo would leave
+  // the refs on main and the record claiming theirs.
+  const meta = JSON.parse(readFileSync(join(cwd, '.git', 'gh-stack'), 'utf8'));
+  assert.equal(meta.stacks[0].trunk.branch, 'main');
 });

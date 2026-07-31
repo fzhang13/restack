@@ -2,7 +2,7 @@
   "name": "restack",
   "displayName": "Restack",
   "description": "Drag to reorder GitHub stacked PRs. Shows the exact git rebase plan before running it, and can undo. Requires the gh CLI with gh-stack.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "felixzhang",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -74,6 +74,19 @@
         "title": "Restack: Rebase Stack"
       },
       {
+        "command": "restack.fetch",
+        "title": "Restack: Fetch from Remote",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "restack.syncStack",
+        "title": "Restack: Sync Stack with Remote"
+      },
+      {
+        "command": "restack.changeBase",
+        "title": "Restack: Change Stack Base"
+      },
+      {
         "command": "restack.removeStack",
         "title": "Restack: Remove Stack"
       },
@@ -95,9 +108,22 @@
           "group": "navigation@1"
         },
         {
-          "command": "restack.refresh",
+          "command": "restack.fetch",
           "when": "view == restack.stackView",
           "group": "navigation@2"
+        },
+        {
+          "command": "restack.refresh",
+          "when": "view == restack.stackView",
+          "group": "navigation@3"
+        },
+        {
+          "command": "restack.syncStack",
+          "when": "view == restack.stackView"
+        },
+        {
+          "command": "restack.changeBase",
+          "when": "view == restack.stackView"
         },
         {
           "command": "restack.checkoutBranch",
@@ -126,7 +152,7 @@
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types test/*.test.ts",
-    "media": "node media/build-icon.mjs && npm run build && node test/harness/build-driver.mjs && node media/build-screenshot.mjs && node media/build-init-screenshot.mjs",
+    "media": "node media/build-icon.mjs && npm run build && node test/harness/build-driver.mjs && node media/build-screenshot.mjs && node media/build-init-screenshot.mjs && node media/build-remote-screenshot.mjs",
     "package": "vsce package",
     "publish:vsce": "vsce publish",
     "publish:ovsx": "ovsx publish",

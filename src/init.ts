@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runCommand, firstLine, gitCommonDir, hasOrigin } from './apply.ts';
 import { addArgs, initArgs, unstackArgs } from './plan.ts';
+import { listRemoteBranches } from './remote.ts';
 import type { LocalStackSummary } from './model.ts';
 
 /**
@@ -31,6 +32,13 @@ export interface TrunkInfo {
   trunk: string;
   /** Every local branch, so the view can offer a different base. */
   localBranches: string[];
+  /**
+   * Remote-tracking branches, qualified (`origin/their-work`). A stack does not
+   * have to sit on the default branch — basing one on a colleague's branch is
+   * the point of `--base` — and that branch often exists only on the remote.
+   * The host creates the local tracking branch before `gh stack init`.
+   */
+  remoteBranches: string[];
 }
 
 /**
@@ -43,7 +51,10 @@ export interface TrunkInfo {
  * to show; initPreflight is what refuses a trunk that does not resolve.
  */
 export async function detectTrunk(cwd: string): Promise<TrunkInfo> {
-  const localBranches = await listLocalBranches(cwd);
+  const [localBranches, remoteBranches] = await Promise.all([
+    listLocalBranches(cwd),
+    listRemoteBranches(cwd),
+  ]);
   const has = (name: string) => localBranches.includes(name);
 
   const remoteHead = await runCommand(
@@ -55,24 +66,25 @@ export async function detectTrunk(cwd: string): Promise<TrunkInfo> {
     // `origin/main` -> `main`.
     const name = remoteHead.stdout.trim().replace(/^origin\//, '');
     if (name && has(name)) {
-      return { trunk: name, localBranches };
+      return { trunk: name, localBranches, remoteBranches };
     }
   }
 
   const recorded = (await readLocalStacks(cwd)).find((s) => has(s.trunk));
   if (recorded) {
-    return { trunk: recorded.trunk, localBranches };
+    return { trunk: recorded.trunk, localBranches, remoteBranches };
   }
 
   const configured = await runCommand('git', ['config', '--get', 'init.defaultBranch'], cwd);
   const fromConfig = configured.code === 0 ? configured.stdout.trim() : '';
   if (fromConfig && has(fromConfig)) {
-    return { trunk: fromConfig, localBranches };
+    return { trunk: fromConfig, localBranches, remoteBranches };
   }
 
   return {
     trunk: ['main', 'master'].find(has) ?? localBranches[0] ?? 'main',
     localBranches,
+    remoteBranches,
   };
 }
 
@@ -391,7 +403,8 @@ export async function runUnstack(
   );
 }
 
-async function listLocalBranches(cwd: string): Promise<string[]> {
+/** Every local branch. Exported for the change-base picker in extension.ts. */
+export async function listLocalBranches(cwd: string): Promise<string[]> {
   const result = await runCommand(
     'git',
     ['for-each-ref', '--format=%(refname:short)', 'refs/heads'],

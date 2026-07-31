@@ -1,5 +1,84 @@
 # Changelog
 
+## 0.3.1
+
+### Fixed
+
+- **A force-push could silently destroy a colleague's commits.** Nothing checked
+  whether a stack branch was behind its own upstream. Reorder locally, then
+  `gh stack push`, and `--force-with-lease` compares against the
+  *remote-tracking* ref — which is the stale one. The lease passes, and commits
+  someone else pushed to your branch are overwritten with no error and nothing
+  to warn you.
+
+  `preflight` now refuses the apply outright, naming the branches and why. There
+  is no safe automatic answer once both sides have moved, so it stops rather
+  than guessing. `gone` is deliberately not refused: a branch deleted after its
+  PR merged has nothing left to clobber, and refusing there would block every
+  stack that had ever landed anything.
+
+### Added
+
+- **Basing a stack on someone else's branch.** `gh stack init --base` has always
+  taken any branch, but the Trunk dropdown only listed *local* ones — so a
+  colleague's branch existing solely as `origin/their-work` could not be picked,
+  and the case the flag exists for was unreachable. The dropdown now has a
+  second group of remote-tracking branches, and picking one creates the local
+  branch first, because gh-stack records a trunk by *name* and needs it to
+  resolve.
+
+  Creating it is only correct the first time. On the second init the branch
+  already exists locally, at whatever commit it was created at, while its owner
+  has pushed since — so Restack fetches, then fast-forwards it, and says by how
+  many commits. A local copy carrying commits of its own is neither adopted nor
+  rewritten: someone else's branch is not ours to rebase, so the drift is named
+  and the init stops.
+
+- **Change base…** on the trunk row, the other half of that story: once their
+  branch merges into `main`, the stack should sit on `main`, and before this
+  there was no way there short of unstacking and starting over. It replays the
+  bottom branch onto the new base and cascades everything above — an ordinary
+  apply, with the plan shown first, conflicts pausing, and undo available. The
+  metadata write records the new trunk, which is what makes the next
+  `gh stack submit` retarget the bottom PR; the confirmation says so, because
+  that is the part that reaches GitHub.
+
+  No new rebase arithmetic. It is `{...stack, trunk: newBase}` handed to the
+  same `computePlan`, and the bottom branch's *recorded* base still anchors its
+  replay — so it takes its own commits and not the new base's.
+
+- **Remote state, and one button that fetches.** Restack knew nothing about the
+  remote: no counts, no staleness, no way to tell that the branch under your
+  stack had moved. Rows now carry `↑2` / `↓3` / `unpushed` / `gone` pills, and
+  the trunk row carries the same, so "3 behind `origin/main`" is visible without
+  opening a plan.
+
+  Every one of those counts is read from local refs — one `git for-each-ref` —
+  which is what makes it safe on the `.git/HEAD` watcher path, and also the
+  catch: they are only as fresh as the last fetch. **Fetch** is the only control
+  that reaches the network, and its tooltip says how long ago that was. Nothing
+  polls in the background.
+
+- **Sync stack**, offered when the trunk has moved under you. Fetches first —
+  always, since a plan built from stale refs would fast-forward to a commit that
+  is no longer the tip — then fast-forwards the trunk and replays the stack on
+  top. The fast-forward has two forms because git does: `git fetch <remote>
+  <trunk>:<trunk>` when the trunk is not checked out, `git merge --ff-only`
+  when it is. Both refuse anything that is not a fast-forward, so the safety is
+  git's rather than ours. Trunk here means whatever the stack sits on, so this
+  works the same on a colleague's branch as on `main`.
+
+### Changed
+
+- Picking a *local* branch as a new base does not fetch, so it may be well
+  behind its own upstream while the stack is about to land on it. The
+  confirmation now says so. A note and not a refusal — basing on an older commit
+  deliberately is legitimate, and Sync stack is the fix if it was not.
+- `runCommand` and friends moved from `apply.ts` into a new `git.ts`. `apply.ts`
+  needs `remote.ts`'s tracking reads for the clobber guard above, and the two
+  importing each other would be a cycle. The alternative was a second exec path,
+  which would be a second thing to keep logging and would drift.
+
 ## 0.3.0
 
 ### Added

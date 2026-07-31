@@ -34,14 +34,22 @@ export function shortSha(sha: string): string {
  * function diffs on is already correct. Anything above a drifted branch replays
  * too, since its parent's tip is about to move. Same recorded-SHA anchors and
  * same metadata write as a reorder — only the reason for replaying differs.
+ *
+ * `options.drifted` names branches to treat as drifted on top of whatever
+ * gh-stack said. Needed because `needsRebase` was computed by `gh stack view`
+ * before Restack did anything: after a fetch moves the trunk, or when the trunk
+ * is being changed outright, the bottom branch has drifted and that flag has no
+ * way of knowing. Supplementing rather than replacing keeps one code path for
+ * every reason a branch might need replaying. Only read when `force` is set.
  */
 export function computePlan(
   stack: Stack,
   proposedOrder: string[],
   candidates: CandidateBranch[] = [],
-  options: { force?: boolean } = {},
+  options: { force?: boolean; drifted?: string[] } = {},
 ): Plan {
   const force = options.force === true;
+  const alsoDrifted = new Set(options.drifted ?? []);
   const currentOrder = stack.branches.map((b) => b.name);
   const byName = new Map(stack.branches.map((b) => [b.name, b]));
 
@@ -72,7 +80,9 @@ export function computePlan(
   // A forced plan with nothing drifted has nothing to do, and must still report
   // isNoop — that flag is what gates the Apply button and the host's own noop
   // check, so claiming work exists would offer an apply that runs no rebases.
-  const hasDrift = proposedOrder.some((name) => byName.get(name)?.needsRebase);
+  const hasDrift = proposedOrder.some(
+    (name) => byName.get(name)?.needsRebase || alsoDrifted.has(name),
+  );
   const isNoop = orderUnchanged && !(force && hasDrift);
 
   if (isNoop) {
@@ -121,7 +131,8 @@ export function computePlan(
     // Under `force`, a branch gh-stack flags as drifted replays even though its
     // position is unchanged — and, via the running flag below, so does
     // everything above it, because its tip is about to move.
-    const drifted = force && (byName.get(name)?.needsRebase ?? false);
+    const drifted =
+      force && ((byName.get(name)?.needsRebase ?? false) || alsoDrifted.has(name));
 
     if (parentUnchanged && !rewrittenBelow && !drifted) {
       return;
@@ -156,6 +167,97 @@ export function computePlan(
   }
 
   return { steps, proposedOrder, isNoop, mergedBranches, insertedBranches, removedBranches };
+}
+
+/**
+ * Move the trunk onto its upstream, before the cascade replays on top of it.
+ *
+ * Two forms, because git allows exactly one of them at a time — verified
+ * against git 2.50:
+ *
+ *   - Trunk not checked out: `git fetch <remote> <trunk>:<trunk>`. This form
+ *     refuses anything but a fast-forward, and refuses outright if the branch
+ *     is checked out (`refusing to fetch into branch ... checked out at`). The
+ *     safety is git's own, not a check we have to write.
+ *   - Trunk checked out: `git merge --ff-only <remote>/<trunk>`, which is the
+ *     same guarantee by the route that works with a working tree attached.
+ *
+ * Fast-forward-only in both cases on purpose. A trunk that cannot fast-forward
+ * has local commits of its own or was force-pushed, and quietly merging or
+ * resetting it is not something a sync should decide by itself — the step fails
+ * and the runner surfaces git's message.
+ *
+ * The `fetch` form does contact the remote, but by the time it runs the objects
+ * are already local: handleSyncStack fetches before building the plan. It is
+ * the ref move that matters here.
+ */
+export function trunkSyncStep(trunk: string, remote: string, checkedOut: boolean): PlanStep {
+  const args = checkedOut
+    ? ['merge', '--ff-only', `${remote}/${trunk}`]
+    : ['fetch', remote, `${trunk}:${trunk}`];
+  return {
+    kind: 'trunk',
+    branch: trunk,
+    command: `git ${args.join(' ')}`,
+    exec: { file: 'git', args },
+    note: checkedOut
+      ? `Fast-forward ${trunk} onto ${remote}/${trunk}. Fails rather than merging if it has diverged.`
+      : `Fast-forward ${trunk} onto ${remote}/${trunk}. Git refuses anything but a fast-forward.`,
+  };
+}
+
+/**
+ * Bring the stack up to date with a trunk that has moved: fast-forward the
+ * trunk, then replay the stack onto it.
+ *
+ * The bottom branch is passed as `drifted` because it *is* — its recorded base
+ * is the trunk SHA from before the fetch. That recorded SHA is what makes the
+ * replay exact: `git rebase --onto <trunk> <oldTrunkSha> <bottom>` takes
+ * precisely the commits after the old trunk tip, which is the bottom branch's
+ * own work and nothing else. Everything above it then cascades through the
+ * ordinary rewrittenBelow logic in computePlan.
+ *
+ * The order is unchanged, so this is `force` in the same sense the drift banner
+ * uses it, and it arrives with the same metadata write, push, and submit steps
+ * as any other plan.
+ */
+export function syncPlan(stack: Stack, remote: string, trunkCheckedOut: boolean): Plan {
+  const order = stack.branches.map((b) => b.name);
+  const bottom = order[0];
+  const plan = computePlan(stack, order, [], {
+    force: true,
+    drifted: bottom ? [bottom] : [],
+  });
+
+  if (plan.isNoop) {
+    // Only reachable with an empty stack: with any branch at all the bottom is
+    // marked drifted above, so there is always something to replay. Returned
+    // without a trunk step because there would be nothing for it to precede.
+    return plan;
+  }
+
+  return { ...plan, steps: [trunkSyncStep(stack.trunk, remote, trunkCheckedOut), ...plan.steps] };
+}
+
+/**
+ * Re-base an entire stack onto a different branch.
+ *
+ * The whole change is `{...stack, trunk: newBase}`: computePlan reads the trunk
+ * off the stack it is given, so the bottom branch's `rebase --onto` targets the
+ * new base and everything above cascades. The caller passes the same modified
+ * stack to the runner, which is what makes the metadata write record the new
+ * trunk — see writeMetadata in apply.ts.
+ *
+ * As in syncPlan, the bottom branch is marked drifted because its recorded base
+ * still points into the old trunk.
+ */
+export function changeBasePlan(stack: Stack, newBase: string): Plan {
+  const order = stack.branches.map((b) => b.name);
+  const bottom = order[0];
+  return computePlan({ ...stack, trunk: newBase }, order, [], {
+    force: true,
+    drifted: bottom ? [bottom] : [],
+  });
 }
 
 /**

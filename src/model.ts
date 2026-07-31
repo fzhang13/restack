@@ -55,6 +55,39 @@ export interface CandidateBranch {
 }
 
 /**
+ * Where a branch stands against its upstream, read from local refs only.
+ *
+ * `ahead` and `behind` are both zero when level, when there is no upstream, and
+ * when the upstream is `gone` — so the flags, not the counts, are what
+ * distinguish those cases.
+ */
+export interface Tracking {
+  branch: string;
+  /** `origin/feat/api`. Absent when the branch has never been pushed. */
+  upstream?: string;
+  /** Local commits the remote does not have. */
+  ahead: number;
+  /** Remote commits we do not have. The clobber signal — see branchesBehind. */
+  behind: number;
+  /** An upstream was configured, but the remote ref is gone (deleted, pruned). */
+  gone: boolean;
+}
+
+/**
+ * The remote half of the view: what the trunk and each stack branch look like
+ * against the remote, as of the last fetch.
+ */
+export interface RemoteState {
+  /** The remote the stack publishes to. Absent when there is none. */
+  remote?: string;
+  trunk: Tracking;
+  /** Parallel to `Stack.branches`, so the view can zip without a lookup. */
+  branches: Tracking[];
+  /** mtime of `.git/FETCH_HEAD` — how stale these counts are. */
+  lastFetched?: number;
+}
+
+/**
  * How a step is executed. `command` is display only; `exec` is what actually
  * runs, so the two can never drift. `file` is a token rather than a path
  * because `gh` resolves against the `restack.ghPath` setting at run time.
@@ -67,9 +100,16 @@ export interface StepExec {
   args: string[];
 }
 
-/** A single step in a reorder plan. */
+/**
+ * A single step in a reorder plan.
+ *
+ * `trunk` fast-forwards the trunk onto its upstream before the cascade replays
+ * on top of it. Local like `rebase` and `metadata`: it only moves a ref this
+ * repository already has objects for, since the fetch happened before the plan
+ * was built.
+ */
 export interface PlanStep {
-  kind: 'rebase' | 'metadata' | 'push' | 'submit';
+  kind: 'rebase' | 'metadata' | 'push' | 'submit' | 'trunk';
   /** Branch this step acts on, when applicable. */
   branch?: string;
   /** Human-readable shell command, ready to copy. */
@@ -160,6 +200,12 @@ export type StackResult =
        */
       trunk?: string;
       localBranches?: string[];
+      /**
+       * Remote-tracking branches, qualified (`origin/feat/x`). A stack can be
+       * based on one of these; the host creates the local tracking branch
+       * before `gh stack init`, which records the trunk by name.
+       */
+      remoteBranches?: string[];
       /** Stacks that exist locally but do not contain the current branch. */
       stacks?: LocalStackSummary[];
     }
@@ -176,6 +222,8 @@ export type HostMessage =
       candidates: CandidateBranch[];
       /** Whether there is an `origin` to push to; gates Push & Submit. */
       canPublish: boolean;
+      /** Ahead/behind for the trunk and each branch. Absent with no stack. */
+      remote?: RemoteState;
     }
   | { type: 'plan'; plan: Plan }
   | { type: 'loading' }
@@ -191,8 +239,32 @@ export type WebviewMessage =
   /**
    * Create a stack from `branches`, bottom-to-top, based on `trunk`. Branches
    * that do not exist yet are created by gh-stack.
+   *
+   * `trunkIsRemote` means `trunk` is a remote-tracking ref (`origin/their-work`)
+   * rather than a local branch: the host creates the local tracking branch
+   * first, since gh-stack records a trunk by name and needs it to resolve.
    */
-  | { type: 'initStack'; trunk: string; branches: string[] }
+  | { type: 'initStack'; trunk: string; branches: string[]; trunkIsRemote?: boolean }
+  /** Go and ask the remote: `git fetch --prune`. The only network read. */
+  | { type: 'fetch' }
+  /**
+   * Fast-forward the trunk onto its upstream, then replay the stack on top of
+   * it. Fetches first, so the plan is never built from stale counts.
+   */
+  | { type: 'syncStack' }
+  /**
+   * Re-base the whole stack onto a different branch — the bottom moves to
+   * `base`, everything above cascades. `isRemote` marks a remote-tracking ref,
+   * handled as in `initStack`.
+   */
+  | { type: 'changeBase'; base: string; isRemote?: boolean }
+  /**
+   * Open the host's branch picker, which then sends `changeBase` itself. The
+   * webview cannot build that list: the branch a stack most often moves back
+   * onto is already merged into its trunk, and so is filtered out of the
+   * candidate tray.
+   */
+  | { type: 'pickBase' }
   /**
    * Extend the stack by one branch, on top: `gh stack add <branch>`. Created if
    * it does not exist, adopted if it does — gh-stack decides, and an adopted

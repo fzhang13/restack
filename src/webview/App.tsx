@@ -25,9 +25,11 @@ import type {
   HostMessage,
   LocalStackSummary,
   Plan,
+  RemoteState,
   Stack,
   StackBranch,
   StackResult,
+  Tracking,
 } from '../model';
 import { addArgs, initArgs } from '../plan';
 import { vscodeApi } from './vscode';
@@ -50,6 +52,80 @@ function toModelOrder(names: string[]): string[] {
 function ordinal(n: number): string {
   const suffix = n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] ?? 'th';
   return `${n}${suffix}`;
+}
+
+/**
+ * How long ago the last fetch was, as coarsely as still says something.
+ *
+ * The point is not the exact number but whether the ahead/behind counts below
+ * are worth believing — "3d ago" and "3d 4h ago" carry the same warning.
+ */
+function since(when: number): string {
+  const seconds = Math.max(0, Math.round((Date.now() - when) / 1000));
+  if (seconds < 60) return 'just now';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+/**
+ * Where a branch stands against its upstream, as one small pill.
+ *
+ * Renders nothing when the branch is level with its remote — the common case,
+ * and a row of "in sync" badges would bury the two states that matter. `gone`
+ * and `unpushed` are stated because their *absence* of counts is otherwise
+ * indistinguishable from being level.
+ */
+function TrackingBadge({ tracking }: { tracking?: Tracking }) {
+  if (!tracking) {
+    return null;
+  }
+  const { ahead, behind, gone, upstream } = tracking;
+
+  if (gone) {
+    return (
+      <span className="badge badge--gone" title={`${upstream} no longer exists on the remote`}>
+        gone
+      </span>
+    );
+  }
+  if (!upstream) {
+    return (
+      <span className="badge badge--unpushed" title="Never pushed — no upstream branch">
+        unpushed
+      </span>
+    );
+  }
+  if (ahead > 0 && behind > 0) {
+    return (
+      <span
+        className="badge badge--diverged"
+        title={`${ahead} ahead, ${behind} behind ${upstream}. Sync before rewriting: a force-push would drop those ${behind}.`}
+      >
+        ↑{ahead} ↓{behind}
+      </span>
+    );
+  }
+  if (behind > 0) {
+    return (
+      <span
+        className="badge badge--behind"
+        title={`${behind} behind ${upstream}. Sync before rewriting: a force-push would drop them.`}
+      >
+        ↓{behind}
+      </span>
+    );
+  }
+  if (ahead > 0) {
+    return (
+      <span className="badge badge--ahead" title={`${ahead} not yet pushed to ${upstream}`}>
+        ↑{ahead}
+      </span>
+    );
+  }
+  return null;
 }
 
 /** Droppable id for the tray, distinct from any branch name. */
@@ -232,6 +308,30 @@ function BranchRow({
   );
 }
 
+/**
+ * Move the whole stack onto a different branch.
+ *
+ * Opens the host's QuickPick rather than rendering a `<select>` here, because
+ * the webview cannot build the list. The one base every such stack eventually
+ * wants — back to `main`, once the colleague's branch merges — is a branch the
+ * trunk already contains, and so is filtered out of `candidates` as merged.
+ * The host enumerates local and remote refs directly and has no such gap.
+ */
+function BaseButton({ disabled }: { disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      className="trunk__base"
+      disabled={disabled}
+      title="Re-base the whole stack onto another branch"
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={() => vscodeApi.postMessage({ type: 'pickBase' })}
+    >
+      Change base…
+    </button>
+  );
+}
+
 function StackColumn({
   title,
   trunk,
@@ -239,6 +339,8 @@ function StackColumn({
   droppableId,
   onTrunk,
   trunkCheckout,
+  trunkTracking,
+  trunkExtra,
   children,
 }: {
   title: string;
@@ -254,6 +356,10 @@ function StackColumn({
   onTrunk?: boolean;
   /** Offer checkout on the trunk row too. Off in the init view, where nothing exists yet. */
   trunkCheckout?: boolean;
+  /** Where the trunk stands against its own upstream, if there is one. */
+  trunkTracking?: Tracking;
+  /** Controls that belong on the trunk row — the base picker, in practice. */
+  trunkExtra?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: droppableId ?? '', disabled: !droppableId });
@@ -276,7 +382,9 @@ function StackColumn({
           <span className="trunk__node" aria-hidden="true" />
           <span className="trunk__name">{trunk}</span>
           {onTrunk && <span className="badge badge--HEAD">HEAD</span>}
+          <TrackingBadge tracking={trunkTracking} />
           {trunkCheckout && !onTrunk && <CheckoutButton branch={trunk} />}
+          {trunkExtra}
         </div>
       </div>
       {branches.length === 0 && <p className="empty">No branches.</p>}
@@ -691,16 +799,25 @@ function InitView({
   message,
   trunk: detectedTrunk,
   localBranches,
+  remoteBranches,
   stacks,
   candidates,
 }: {
   message: string;
   trunk?: string;
   localBranches: string[];
+  /** Qualified remote refs (`origin/their-work`), offered as a base of their own. */
+  remoteBranches: string[];
   stacks: LocalStackSummary[];
   candidates: CandidateBranch[];
 }) {
   const [trunk, setTrunk] = useState(detectedTrunk ?? 'main');
+  /**
+   * The picked trunk is a remote ref, so the host has a local tracking branch
+   * to create before `gh stack init` — which records a trunk by name and needs
+   * it to resolve.
+   */
+  const trunkIsRemote = remoteBranches.includes(trunk);
   /** Branches picked for the new stack, top-down like the reorder view. */
   const [picked, setPicked] = useState<string[]>([]);
   const [available, setAvailable] = useState<string[]>(() => candidates.map((c) => c.name));
@@ -796,7 +913,13 @@ function InitView({
 
   /** Bottom-to-top, which is the order gh stack init takes its arguments in. */
   const order = toModelOrder(picked);
-  const command = `gh ${initArgs(trunk, order).join(' ')}`;
+  /**
+   * `origin/their-work` -> `their-work`, the local branch the host creates. Only
+   * ever applied to a name that came from `remoteBranches`, so the first segment
+   * is the remote — the host does the same strip against the real remote list.
+   */
+  const localTrunk = trunkIsRemote ? trunk.slice(trunk.indexOf('/') + 1) : trunk;
+  const command = `gh ${initArgs(localTrunk, order).join(' ')}`;
 
   const rowFor = useCallback(
     (name: string): StackBranch => ({
@@ -863,13 +986,26 @@ function InitView({
             id="init-trunk"
             value={trunk}
             onChange={(e) => setTrunk(e.target.value)}
-            disabled={localBranches.length === 0}
+            disabled={localBranches.length === 0 && remoteBranches.length === 0}
           >
             {(localBranches.length > 0 ? localBranches : [trunk]).map((name) => (
               <option key={name} value={name}>
                 {name}
               </option>
             ))}
+            {/*
+              A stack does not have to sit on the default branch, and the
+              colleague's branch you want to build on often exists only here.
+            */}
+            {remoteBranches.length > 0 && (
+              <optgroup label="Remote — creates a local branch">
+                {remoteBranches.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </optgroup>
+            )}
           </select>
         </div>
 
@@ -942,11 +1078,18 @@ function InitView({
         </div>
 
         <div className="init__preview">
-          <code>{command}</code>
+          <code>
+            {trunkIsRemote && `git branch --track ${localTrunk} ${trunk}\n`}
+            {command}
+          </code>
           <span className="step__note">
             {picked.length === 0
               ? 'Add at least one branch.'
-              : 'Adopts branches that exist and creates the ones that do not. ' +
+              : (trunkIsRemote
+                  ? `${trunk} exists only on the remote, so a local ${localTrunk} is created ` +
+                    'to track it first. '
+                  : '') +
+                'Adopts branches that exist and creates the ones that do not. ' +
                 'Adopting does not rebase them — Restack offers that next.'}
           </span>
         </div>
@@ -954,7 +1097,16 @@ function InitView({
         <button
           type="button"
           className="publish init__go"
-          onClick={() => vscodeApi.postMessage({ type: 'initStack', trunk, branches: order })}
+          onClick={() =>
+            vscodeApi.postMessage({
+              // The qualified name: the host strips the remote itself, against
+              // the real remote list rather than the first slash.
+              type: 'initStack',
+              trunk,
+              branches: order,
+              trunkIsRemote,
+            })
+          }
           disabled={picked.length === 0}
         >
           Initialize stack
@@ -977,6 +1129,8 @@ export function App() {
   const [trayOrder, setTrayOrder] = useState<string[]>([]);
   const [candidates, setCandidates] = useState<CandidateBranch[]>([]);
   const [canPublish, setCanPublish] = useState(false);
+  /** Ahead/behind as of the last fetch. Absent with no stack, or no remote. */
+  const [remote, setRemote] = useState<RemoteState | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
 
   const sensors = useSensors(
@@ -998,6 +1152,7 @@ export function App() {
         setPlan(null);
         setCandidates(message.candidates);
         setCanPublish(message.canPublish);
+        setRemote(message.remote ?? null);
         setDisplayOrder(
           message.result.kind === 'ok'
             ? toDisplayOrder(message.result.stack.branches.map((b) => b.name))
@@ -1042,6 +1197,16 @@ export function App() {
   const currentDisplay = useMemo(
     () => toDisplayOrder((stack?.branches ?? []).map((b) => b.name)),
     [stack],
+  );
+
+  /**
+   * Tracking by branch name. `remote.branches` arrives parallel to
+   * `stack.branches`, but the proposed column renders in a different order and
+   * the tray in none at all, so it is indexed by name once here.
+   */
+  const trackingByName = useMemo(
+    () => new Map((remote?.branches ?? []).map((t) => [t.branch, t])),
+    [remote],
   );
 
   /** Colour by current position, so a branch keeps its node colour when moved. */
@@ -1218,6 +1383,7 @@ export function App() {
         message={result.message}
         trunk={result.trunk}
         localBranches={result.localBranches ?? []}
+        remoteBranches={result.remoteBranches ?? []}
         stacks={result.stacks ?? []}
         candidates={candidates}
       />
@@ -1263,6 +1429,17 @@ export function App() {
    */
   const drifted = dirty ? [] : stack.branches.filter((b) => b.needsRebase).map((b) => b.name);
 
+  /**
+   * Branches whose remote has commits we do not. Mirrors `branchesBehind` in
+   * remote.ts, which is what preflight refuses on — so the banner below states
+   * the same rule the host enforces, rather than the UI offering a button that
+   * is guaranteed to be rejected. `gone` is excluded in both places: a branch
+   * deleted after its PR merged is normal, not a hazard.
+   */
+  const behind = (remote?.branches ?? []).filter((t) => !t.gone && t.behind > 0);
+  /** The trunk moved under the stack. Fixable, unlike the above — hence a button. */
+  const trunkBehind = remote?.trunk.gone ? 0 : (remote?.trunk.behind ?? 0);
+
   return (
     <div className="app">
       <div className="toolbar">
@@ -1272,6 +1449,23 @@ export function App() {
           disabled={busy}
         >
           Refresh
+        </button>
+        {/*
+          Refresh re-reads local refs; this is the only control that talks to
+          the network. Every count on this screen is as old as the last one.
+        */}
+        <button
+          type="button"
+          onClick={() => vscodeApi.postMessage({ type: 'fetch' })}
+          disabled={busy || !remote?.remote}
+          title={
+            remote?.remote
+              ? `git fetch --prune ${remote.remote}` +
+                (remote.lastFetched ? ` — last fetched ${since(remote.lastFetched)}` : '')
+              : 'No remote to fetch from'
+          }
+        >
+          Fetch
         </button>
         <button type="button" onClick={reset} disabled={!dirty || busy}>
           Reset
@@ -1327,6 +1521,50 @@ export function App() {
         </p>
       )}
 
+      {/*
+        Blocking, and first among the remote banners: preflight refuses every
+        apply while this holds, so offering the fixable trunk case above it
+        would be offering a button that cannot run.
+      */}
+      {behind.length > 0 && (
+        <div className="warn">
+          <p className="warn__text">
+            {behind
+              .map((t) => `${t.branch} is ${t.behind} behind ${t.upstream ?? 'its upstream'}`)
+              .join('; ')}
+            . Rewriting is blocked: <code>gh stack push</code> force-pushes with a lease
+            against the remote ref we already have, so those commits would be dropped with
+            no warning. Pull{' '}
+            {behind.length === 1 ? 'that branch' : 'those branches'} first — Restack has no
+            safe automatic answer, since the local and remote sides have both moved.
+          </p>
+        </div>
+      )}
+
+      {trunkBehind > 0 && (
+        <div className="warn">
+          <p className="warn__text">
+            <strong>{stack.trunk}</strong> is {trunkBehind} commit
+            {trunkBehind === 1 ? '' : 's'} behind {remote?.trunk.upstream ?? 'its upstream'}
+            {remote?.lastFetched ? ` as of ${since(remote.lastFetched)}` : ''}. Syncing
+            fast-forwards it and replays the stack on top — snapshotted first, and nothing
+            is pushed.
+          </p>
+          <button
+            type="button"
+            onClick={() => vscodeApi.postMessage({ type: 'syncStack' })}
+            disabled={busy || behind.length > 0}
+            title={
+              behind.length > 0
+                ? 'Resolve the branches behind their upstreams first.'
+                : `Fetch, fast-forward ${stack.trunk}, then replay the stack`
+            }
+          >
+            Sync stack
+          </button>
+        </div>
+      )}
+
       {drifted.length > 0 && (
         <div className="warn">
           <p className="warn__text">
@@ -1365,6 +1603,8 @@ export function App() {
             branches={stack.branches}
             onTrunk={head.onTrunk}
             trunkCheckout={!busy}
+            trunkTracking={remote?.trunk}
+            trunkExtra={<BaseButton disabled={busy} />}
           >
             {currentDisplay.map((name, i) => {
               const branch = byName.get(name);
@@ -1374,6 +1614,9 @@ export function App() {
                   <span className="name">{branch.name}</span>
                   {branch.prNumber && <PrTag branch={branch} />}
                   {branch.isCurrent && <span className="badge badge--HEAD">HEAD</span>}
+                  {/* Only on this column: the proposed one describes a future
+                      state, and these counts are about the present. */}
+                  <TrackingBadge tracking={trackingByName.get(name)} />
                   {!branch.isCurrent && <CheckoutButton branch={name} disabled={busy} />}
                 </li>
               ) : null;

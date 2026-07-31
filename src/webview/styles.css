@@ -247,6 +247,43 @@ button:disabled {
   cursor: default;
 }
 
+/*
+ * Change base, on the trunk row because that is what it changes. Hover-revealed
+ * like the checkout arrow next to it — re-basing a whole stack is rare enough
+ * that a permanently visible control would just be noise on every row.
+ *
+ * `margin-left: auto` on both this and .row__checkout is deliberate: whichever
+ * comes first absorbs the gap, so the pair sits right-aligned whether or not
+ * the checkout button is rendered.
+ */
+.trunk__base {
+  margin-left: auto;
+  padding: 0 5px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: inherit;
+  font-size: 10px;
+  line-height: 1.5;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 80ms linear;
+}
+
+.trunk:hover .trunk__base,
+.trunk__base:focus-visible {
+  opacity: 0.75;
+}
+
+.trunk__base:hover:not(:disabled) {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(127, 127, 127, 0.2));
+}
+
+.trunk__base:disabled {
+  cursor: default;
+}
+
 /* Standing on the trunk is a position like any other, so it is marked like one. */
 .trunk--current .trunk__name {
   font-weight: 600;
@@ -328,6 +365,37 @@ button:disabled {
 .badge--leaving {
   color: var(--vscode-editorWarning-foreground, #cca700);
   background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.15));
+}
+
+/*
+ * Remote tracking. The arrows are the signal, so these keep the badge's normal
+ * casing rather than the uppercasing the word badges get — "↑2" is not a word,
+ * and text-transform on the count reads as a rendering accident.
+ */
+.badge--ahead,
+.badge--behind,
+.badge--diverged,
+.badge--unpushed,
+.badge--gone {
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Unpushed commits are the expected state of work in progress: stated, not
+   flagged. Behind and diverged are the ones a force-push would destroy. */
+.badge--ahead {
+  color: var(--vscode-gitDecoration-untrackedResourceForeground, #3fb950);
+}
+
+.badge--behind,
+.badge--diverged {
+  color: var(--vscode-editorError-foreground, #f85149);
+  background: var(--vscode-inputValidation-errorBackground, rgba(248, 81, 73, 0.12));
+}
+
+.badge--unpushed,
+.badge--gone {
+  opacity: 0.75;
 }
 
 /*
