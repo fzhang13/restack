@@ -286,6 +286,77 @@ test('resolving a conflict and continuing finishes the plan', async (t) => {
   assert.equal(git(cwd, 'status', '--porcelain'), '');
 });
 
+// Staging happens outside Restack — in the merge editor, the SCM view, or a
+// terminal. Without this the panel shows one stale snapshot and Continue can
+// only be tried and rejected.
+test('refreshConflict tracks staging without advancing the plan', async (t) => {
+  const cwd = makeRepo({ sharedFile: true });
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const stack = readStackFrom(cwd);
+  const next = ['feat/ui', 'feat/auth', 'feat/api'];
+  const { runner, states } = collect();
+  await runner.start(cwd, 'gh', stack, computePlan(stack, next), next, 'local');
+
+  const paused = states.at(-1)!;
+  assert.equal(paused.phase, 'conflict');
+  assert.deepEqual(paused.conflictFiles, ['shared.txt']);
+  assert.deepEqual(paused.unresolvedFiles, ['shared.txt']);
+  const cursor = paused.stepIndex;
+
+  // An index event with nothing actually staged must not move anything.
+  await runner.refreshConflict();
+  assert.deepEqual(states.at(-1)!.unresolvedFiles, ['shared.txt']);
+  assert.equal(states.at(-1)!.stepIndex, cursor);
+
+  // Resolve and stage the way the merge editor's "Complete Merge" does.
+  writeFileSync(join(cwd, 'shared.txt'), 'resolved\n');
+  git(cwd, 'add', 'shared.txt');
+  await runner.refreshConflict();
+
+  const tracked = states.at(-1)!;
+  assert.equal(tracked.phase, 'conflict', 'still paused — refresh does not continue the rebase');
+  assert.equal(tracked.stepIndex, cursor);
+  assert.deepEqual(tracked.unresolvedFiles, []);
+  // The resolved file stays listed, or the record of resolving it is lost.
+  assert.deepEqual(tracked.conflictFiles, ['shared.txt']);
+  assert.match(tracked.message!, /resolved/);
+
+  // And Continue, now that the UI would enable it, actually proceeds. Every
+  // branch here rewrites the same line, so the cascade walks into the next
+  // conflict rather than finishing — what matters is that it moved at all,
+  // and that it was not refused.
+  await runner.resume();
+  const after = states.at(-1)!;
+  assert.doesNotMatch(after.message ?? '', /Still unresolved/);
+  assert.ok(
+    after.phase !== 'conflict' || after.stepIndex > cursor,
+    'resume should advance the plan once everything is staged',
+  );
+});
+
+test('refreshConflict is inert outside a paused conflict', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const idle = collect();
+  // No session at all: the watcher can outlive one by a debounce interval.
+  await idle.runner.refreshConflict();
+  assert.deepEqual(idle.states, []);
+
+  const stack = readStackFrom(cwd);
+  const next = ['feat/api', 'feat/ui', 'feat/auth'];
+  const { runner, states } = collect();
+  await runner.start(cwd, 'gh', stack, computePlan(stack, next), next, 'local');
+  assert.equal(states.at(-1)!.phase, 'done');
+
+  // A finished session still holds its snapshot for Undo, and the index moves
+  // constantly. Nothing here should re-open a conflict that is over.
+  const count = states.length;
+  await runner.refreshConflict();
+  assert.equal(states.length, count);
+});
+
 test('preflight refuses a dirty tree', async (t) => {
   const cwd = makeRepo();
   t.after(() => rmSync(cwd, { recursive: true, force: true }));

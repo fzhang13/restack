@@ -4,7 +4,13 @@ import { promisify } from 'node:util';
 import { readStack } from './stack';
 import { readCandidates, readBranchCandidates } from './candidates';
 import { computePlan, initArgs, unstackArgs } from './plan';
-import { ApplyRunner, hasOrigin, preflight, type PersistedSession } from './apply';
+import {
+  ApplyRunner,
+  hasOrigin,
+  preflight,
+  rebaseInProgress,
+  type PersistedSession,
+} from './apply';
 import {
   detectTrunk,
   initPreflight,
@@ -46,19 +52,69 @@ class StackViewProvider implements vscode.WebviewViewProvider {
   private lastCandidates: CandidateBranch[] = [];
   private readonly runner: ApplyRunner;
   private readonly log: vscode.OutputChannel;
+  private readonly status: vscode.StatusBarItem;
+  /** Watches `.git/index`; alive only while a conflict is paused. See watchIndex. */
+  private indexWatcher?: vscode.Disposable;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     log: vscode.OutputChannel,
+    status: vscode.StatusBarItem,
   ) {
     this.log = log;
+    this.status = status;
     this.runner = new ApplyRunner(
-      (progress) => this.post({ type: 'apply', progress }),
+      (progress) => {
+        this.post({ type: 'apply', progress });
+        // Staging is what ends a conflict, and it happens outside this
+        // extension — in the merge editor, the SCM view, or a terminal. The
+        // watcher is how the panel finds out.
+        this.watchIndex(progress.phase === 'conflict');
+      },
       {
         persist: (state) => void this.context.workspaceState.update(SESSION_KEY, state),
         log: (line) => this.log.appendLine(line),
       },
     );
+  }
+
+  /**
+   * Start or stop watching the git index.
+   *
+   * Only runs while a conflict is open: outside one there is nothing to
+   * recompute, and the index is written by every ordinary git operation in the
+   * workspace. Staging rewrites it several times in a row, hence the debounce.
+   */
+  private watchIndex(wanted: boolean): void {
+    if (wanted === (this.indexWatcher !== undefined)) {
+      return;
+    }
+    if (!wanted) {
+      this.indexWatcher?.dispose();
+      this.indexWatcher = undefined;
+      return;
+    }
+
+    const watcher = vscode.workspace.createFileSystemWatcher('**/.git/index');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bump = () => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+      timer = setTimeout(() => {
+        timer = undefined;
+        void this.runner.refreshConflict();
+      }, 250);
+    };
+
+    this.indexWatcher = vscode.Disposable.from(
+      watcher,
+      watcher.onDidChange(bump),
+      watcher.onDidCreate(bump),
+      new vscode.Disposable(() => timer && clearTimeout(timer)),
+    );
+    // A backstop only: the pair above is what normally disposes it.
+    this.context.subscriptions.push(this.indexWatcher);
   }
 
   /**
@@ -165,6 +221,9 @@ class StackViewProvider implements vscode.WebviewViewProvider {
         case 'openFile':
           void this.openFile(message.path);
           break;
+        case 'openMergeEditor':
+          void this.openMergeEditor(message.path);
+          break;
         case 'checkout':
           void this.handleCheckout(message.branch);
           break;
@@ -220,19 +279,68 @@ class StackViewProvider implements vscode.WebviewViewProvider {
    * folder root rather than trusted.
    */
   private async openFile(relative: string): Promise<void> {
+    const target = this.resolveInWorkspace(relative);
+    if (!target) {
+      return;
+    }
+    await this.guard(() => this.showAsText(target));
+  }
+
+  /**
+   * Open a conflicted file in VS Code's three-way merge editor.
+   *
+   * `git.openMergeEditor` belongs to the built-in git extension, and it already
+   * understands a rebase: it diffs against REBASE_HEAD rather than MERGE_HEAD
+   * when one is in progress. Completing the merge there stages the file, which
+   * is precisely what the runner's Continue requires — so the whole loop stays
+   * in the editor.
+   *
+   * It resolves silently when it cannot do the job — git disabled, the file no
+   * longer in the merge group, the extension's own state not yet refreshed — so
+   * success is confirmed by looking at what actually opened, and plain text is
+   * the fallback rather than a dead button.
+   */
+  private async openMergeEditor(relative: string): Promise<void> {
+    const target = this.resolveInWorkspace(relative);
+    if (!target) {
+      return;
+    }
+
+    await this.guard(async () => {
+      try {
+        await vscode.commands.executeCommand('git.openMergeEditor', target);
+      } catch (err) {
+        this.log.appendLine(
+          `git.openMergeEditor failed for ${relative}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      if (isMergeTab(vscode.window.tabGroups.activeTabGroup.activeTab?.input)) {
+        return;
+      }
+      await this.showAsText(target);
+    });
+  }
+
+  /** Open `target` as an ordinary text document, conflict markers and all. */
+  private async showAsText(target: vscode.Uri): Promise<void> {
+    const doc = await vscode.workspace.openTextDocument(target);
+    await vscode.window.showTextDocument(doc, { preview: true });
+  }
+
+  /**
+   * Resolve a workspace-relative path, refusing anything that escapes the
+   * folder. The path comes from `git diff` in this workspace, but it arrives
+   * over a message channel, so it is re-checked rather than trusted.
+   */
+  private resolveInWorkspace(relative: string): vscode.Uri | undefined {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) {
-      return;
+      return undefined;
     }
     const target = vscode.Uri.joinPath(folder.uri, relative);
     const root = folder.uri.fsPath.replace(/\/*$/, '/');
-    if (!target.fsPath.startsWith(root)) {
-      return;
-    }
-    await this.guard(async () => {
-      const doc = await vscode.workspace.openTextDocument(target);
-      await vscode.window.showTextDocument(doc, { preview: true });
-    });
+    return target.fsPath.startsWith(root) ? target : undefined;
   }
 
   /** Check a branch out, refusing anything that could lose work. */
@@ -249,6 +357,15 @@ class StackViewProvider implements vscode.WebviewViewProvider {
     }
 
     await this.guard(async () => {
+      // A rebase Restack did not start — left over from a terminal, say — is
+      // invisible to the check above, and switching out of one strands it.
+      if (await rebaseInProgress(cwd)) {
+        void vscode.window.showErrorMessage(
+          'Restack: a rebase is in progress. Finish it (`git rebase --continue`) or abort it before switching branches.',
+        );
+        return;
+      }
+
       const result = await checkout(cwd, branch);
       if (result) {
         void vscode.window.showErrorMessage(`Restack: ${result}`);
@@ -256,6 +373,82 @@ class StackViewProvider implements vscode.WebviewViewProvider {
       }
       await this.refresh();
     });
+  }
+
+  /**
+   * Pick a branch to check out from the stack — the palette and status bar
+   * route to the same place the view's per-row buttons post to.
+   *
+   * Listed top-down, matching the view, with the trunk last: it is where the
+   * stack sits rather than a part of it, but it is still somewhere you stand.
+   */
+  async checkoutBranch(): Promise<void> {
+    if (!this.lastStack) {
+      await this.refresh();
+    }
+    const stack = this.lastStack;
+    if (!stack) {
+      void vscode.window.showInformationMessage(
+        'Restack: no stack here to check out from. Open the Restack view to create one.',
+      );
+      return;
+    }
+
+    const current = stack.currentBranch;
+    const items: Array<vscode.QuickPickItem & { branch: string }> = [
+      ...[...stack.branches].reverse().map((b, i) => ({
+        branch: b.name,
+        label: `${b.name === current ? '$(check) ' : '$(circle-outline) '}${b.name}`,
+        description: b.prNumber ? `#${b.prNumber}` : undefined,
+        detail: [
+          `${stack.branches.length - i} of ${stack.branches.length}`,
+          b.isMerged ? 'merged' : b.isQueued ? 'queued' : '',
+          b.needsRebase ? 'needs rebase' : '',
+        ]
+          .filter(Boolean)
+          .join(' · '),
+      })),
+      {
+        branch: stack.trunk,
+        label: `${stack.trunk === current ? '$(check) ' : '$(circle-outline) '}${stack.trunk}`,
+        description: 'trunk',
+      },
+    ];
+
+    const picked = await vscode.window.showQuickPick(items, {
+      title: 'Check out a branch in this stack',
+      placeHolder: current ? `On ${current}` : 'Select a branch',
+    });
+    if (picked && picked.branch !== current) {
+      await this.handleCheckout(picked.branch);
+    }
+  }
+
+  /**
+   * Mirror HEAD's position in the status bar, so the stack is legible without
+   * the view open. Hidden whenever there is no stack to be positioned within.
+   */
+  private updateStatus(stack: Stack | undefined): void {
+    if (!stack || !stack.currentBranch) {
+      this.status.hide();
+      return;
+    }
+
+    const total = stack.branches.length;
+    const index = stack.branches.findIndex((b) => b.name === stack.currentBranch);
+    const onTrunk = stack.currentBranch === stack.trunk;
+
+    // Counted from the bottom, so it reads the same way the column does.
+    const position = onTrunk ? 'trunk' : index >= 0 ? `${index + 1}/${total}` : 'outside';
+    this.status.text = `$(git-branch) ${stack.currentBranch} ${position}`;
+    this.status.tooltip =
+      (onTrunk
+        ? `On ${stack.trunk}, the trunk this stack sits on.`
+        : index >= 0
+          ? `On ${stack.currentBranch} — branch ${index + 1} of ${total} in the stack.`
+          : `On ${stack.currentBranch}, which is not part of this stack.`) +
+      '\n\nClick to check out another branch in the stack.';
+    this.status.show();
   }
 
   /** Surface a thrown error as a notification instead of losing it in a promise. */
@@ -677,6 +870,7 @@ class StackViewProvider implements vscode.WebviewViewProvider {
   async refresh(): Promise<void> {
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!folder) {
+      this.updateStatus(undefined);
       this.post({
         type: 'stack',
         result: { kind: 'error', message: 'Open a folder to read its stack.' },
@@ -690,6 +884,7 @@ class StackViewProvider implements vscode.WebviewViewProvider {
     const cwd = folder.uri.fsPath;
     let result: StackResult = await readStack(cwd, this.ghPath());
     this.lastStack = result.kind === 'ok' ? result.stack : undefined;
+    this.updateStatus(this.lastStack);
     // The plan described the pre-refresh order; holding on to it would let a
     // later apply run stale commands.
     this.lastPlan = undefined;
@@ -749,6 +944,22 @@ class StackViewProvider implements vscode.WebviewViewProvider {
   }
 }
 
+/**
+ * Whether the merge editor is what actually opened.
+ *
+ * `vscode.TabInputTextMerge` exists at runtime but is absent from
+ * `@types/vscode` (checked against 1.125), so `instanceof` will not compile.
+ * The shape is the check instead, and it is an unambiguous one: the merge input
+ * is the only tab input carrying a base/input1/input2/result quadruple.
+ */
+function isMergeTab(input: unknown): boolean {
+  if (typeof input !== 'object' || input === null) {
+    return false;
+  }
+  const tab = input as Record<string, unknown>;
+  return ['base', 'input1', 'input2', 'result'].every((key) => tab[key] instanceof vscode.Uri);
+}
+
 /** Run git. Never rejects. */
 async function git(cwd: string, args: string[]): Promise<{ ok: boolean; stdout: string; error: string }> {
   try {
@@ -778,21 +989,29 @@ async function checkout(cwd: string, branch: string): Promise<string | undefined
 
 export function activate(context: vscode.ExtensionContext): void {
   const log = vscode.window.createOutputChannel('Restack');
-  const provider = new StackViewProvider(context, log);
+  // Left of centre, so it sits near the git extension's own branch indicator
+  // rather than out at the far end with the language tools.
+  const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  status.command = 'restack.checkoutBranch';
+  const provider = new StackViewProvider(context, log, status);
 
   context.subscriptions.push(
     log,
+    status,
     vscode.window.registerWebviewViewProvider('restack.stackView', provider),
     vscode.commands.registerCommand('restack.refresh', () => provider.refresh()),
     vscode.commands.registerCommand('restack.pushSubmit', () => provider.pushSubmit()),
     vscode.commands.registerCommand('restack.rebaseStack', () => provider.rebaseStack()),
     vscode.commands.registerCommand('restack.removeStack', () => provider.removeStack()),
+    vscode.commands.registerCommand('restack.checkoutBranch', () => provider.checkoutBranch()),
     vscode.commands.registerCommand('restack.showLog', () => log.show()),
   );
 
   // Before any refresh, so a webview connecting for the first time is replayed
-  // the session this window was reloaded out of.
-  void provider.restoreSession();
+  // the session this window was reloaded out of. The refresh that follows is
+  // what the status bar is drawn from — without it the stack stays invisible
+  // until the view is opened, which is the opposite of the point.
+  void provider.restoreSession().then(() => provider.refresh());
 }
 
 export function deactivate(): void {}

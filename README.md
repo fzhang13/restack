@@ -71,6 +71,28 @@ If stacks exist but the current branch is not in one, the panel lists them with
 a **Check out** button instead — that is usually what you wanted, not a second
 stack.
 
+### Knowing where you are, and moving
+
+The row you are standing on carries a **HEAD** pill and a filled node, and a
+line above the columns says it in words: `You are on feat/api — 2nd of 3 in the
+stack.` Trunk is a position like any other — `gh stack view` still reports the
+whole stack from there — so standing on `main` marks the trunk row rather than
+falling back to the empty state. Standing on a branch gh-stack does not track is
+the one case shown as a warning, because nothing you drag will move where you
+are.
+
+To move somewhere else, take whichever route is nearest:
+
+- the `⇣` button that appears on a row when the pointer is over it, or when it
+  takes keyboard focus;
+- the status bar item (`$(git-branch) feat/api 2/3`), which opens the picker;
+- `Restack: Check Out Branch in Stack`, listing the stack top-down with trunk
+  last and the current branch ticked;
+- double-clicking a row in the *Proposed* column, as before.
+
+All four refuse for the same reasons: a dirty worktree, an apply in flight, or a
+rebase already in progress — checking out mid-rebase abandons it.
+
 ### Adding and removing branches
 
 Below the stack, **Available** lists the repo's other local branches — every
@@ -139,7 +161,28 @@ the metadata write. Pushing before submitting is not redundant even though
 submit pushes too — a rejected lease surfaces before any PR base is retargeted.
 
 On a conflict the rebase pauses in place. Resolve the listed files, stage them,
-and hit *Continue*; or *Abort* to roll everything back.
+and hit *Continue*; or *Abort* to roll everything back. See
+[Resolving a conflict](#resolving-a-conflict).
+
+### Resolving a conflict
+
+Each conflicted file gets a **Resolve** button that opens VS Code's own
+three-way merge editor — `git.openMergeEditor`, the same command the SCM view
+offers, which handles the rebase case by diffing `REBASE_HEAD` against `HEAD`.
+Its *Complete Merge* stages the file, which is exactly what *Continue* needs. The
+path itself stays a plain-text link for when the merge editor is not what you
+want, markers and all.
+
+While paused, Restack watches `.git/index` and re-reads the unmerged paths on
+every write, so files flip to `✓ staged` as you resolve them and *Continue* stays
+disabled until none are left. Watching the index rather than the merge editor is
+what makes `git add` in a terminal and the ➕ in the SCM view work identically —
+whatever stages the file is what the panel reacts to.
+
+Resolved files stay in the list rather than disappearing: a list that shrank as
+you went would erase the record of what you had already done. And the disabled
+button is a hint, not the guard — *Continue* re-reads the index host-side before
+running anything.
 
 ### Publishing without a reorder
 
@@ -277,6 +320,12 @@ npm run build && node test/harness/build-driver.mjs
 open test/harness/index.html
 ```
 
+`?view=` reaches the states a single fixture cannot be in at once — `init`,
+`outside`, `drift`, `trunk`, `away`, and `conflict`. The conflict view is
+interactive rather than a still: clicking **Resolve** marks the file staged and
+re-emits after a beat, standing in for the merge editor and the index watcher, so
+the gating on *Continue* can be exercised with no repository behind it.
+
 ### Publishing
 
 Two registries, because Cursor cannot install from the VS Code Marketplace —
@@ -327,7 +376,10 @@ Working:
   inserting next to one
 - Executing the plan: rebases, the gh-stack metadata rewrite, push, submit
 - Push & Submit as a standalone toolbar action, with no apply session
-- Conflict pause / continue / abort, with snapshot-based rollback
+- Conflict pause / continue / abort, with snapshot-based rollback, resolved in
+  VS Code's three-way merge editor and tracked live off `.git/index`
+- A HEAD indicator showing where you are in the stack, and checkout from a row
+  button, the status bar, or the command palette
 - Dirty-worktree and mid-rebase refusal before anything runs
 - Apply state persisted to `workspaceState`, so a window reload mid-apply comes
   back with Continue/Abort/Undo live

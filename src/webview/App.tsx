@@ -46,6 +46,12 @@ function toModelOrder(names: string[]): string[] {
   return [...names].reverse();
 }
 
+/** `1` -> `1st`. Stacks are short, so the teens rule never bites in practice. */
+function ordinal(n: number): string {
+  const suffix = n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] ?? 'th';
+  return `${n}${suffix}`;
+}
+
 /** Droppable id for the tray, distinct from any branch name. */
 const TRAY_ID = '__tray__';
 /** The init view's stack column, droppable so the first branch has a target. */
@@ -67,13 +73,40 @@ const EMPTY_PLAN: Plan = {
  */
 const NODE_COLORS = ['#4c8dff', '#3fb950', '#d4a72c', '#e07a3f', '#a371f7', '#ec6cb9'];
 
-function Node({ index }: { index: number }) {
+function Node({ index, isHead }: { index: number; isHead?: boolean }) {
   return (
     <span
-      className="node"
+      className={`node${isHead ? ' node--head' : ''}`}
       aria-hidden="true"
       style={{ '--node-color': NODE_COLORS[index % NODE_COLORS.length] } as React.CSSProperties}
     />
+  );
+}
+
+/**
+ * Check this branch out. Shown on hover so a row full of always-visible
+ * controls does not compete with the graph, and never on the row that is
+ * already HEAD — there is nothing to switch to.
+ */
+function CheckoutButton({ branch, disabled }: { branch: string; disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      className="row__checkout"
+      title={disabled ? 'Busy' : `Check out ${branch}`}
+      aria-label={`Check out ${branch}`}
+      disabled={disabled}
+      // The row is a drag handle and a dblclick target; neither should claim
+      // this click. Same treatment as PrTag.
+      onPointerDown={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        vscodeApi.postMessage({ type: 'checkout', branch });
+      }}
+    >
+      ⇣
+    </button>
   );
 }
 
@@ -144,6 +177,8 @@ function BranchRow({
   };
 
   const badges: string[] = [];
+  // First, so "you are here" is not read after three status words.
+  if (branch.isCurrent) badges.push('HEAD');
   if (isNew) badges.push('new');
   if (branch.isMerged) badges.push('merged');
   else if (branch.isQueued) badges.push('queued');
@@ -184,7 +219,7 @@ function BranchRow({
         listeners?.onKeyDown?.(event);
       }}
     >
-      <Node index={colorIndex} />
+      <Node index={colorIndex} isHead={branch.isCurrent} />
       <span className="name">{branch.name}</span>
       {!hidePr && <PrTag branch={branch} />}
       {badges.map((b) => (
@@ -192,6 +227,7 @@ function BranchRow({
           {b}
         </span>
       ))}
+      {onCheckout && !branch.isCurrent && <CheckoutButton branch={branch.name} />}
     </li>
   );
 }
@@ -201,6 +237,8 @@ function StackColumn({
   trunk,
   branches,
   droppableId,
+  onTrunk,
+  trunkCheckout,
   children,
 }: {
   title: string;
@@ -212,6 +250,10 @@ function StackColumn({
    * no way to put the first branch in.
    */
   droppableId?: string;
+  /** HEAD is on the trunk — a real position in the stack, not the absence of one. */
+  onTrunk?: boolean;
+  /** Offer checkout on the trunk row too. Off in the init view, where nothing exists yet. */
+  trunkCheckout?: boolean;
   children?: React.ReactNode;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: droppableId ?? '', disabled: !droppableId });
@@ -230,9 +272,11 @@ function StackColumn({
         className={['graph', isOver ? 'graph--over' : ''].filter(Boolean).join(' ')}
       >
         <ol className="rows">{children}</ol>
-        <div className="trunk">
+        <div className={`trunk${onTrunk ? ' trunk--current' : ''}`}>
           <span className="trunk__node" aria-hidden="true" />
           <span className="trunk__name">{trunk}</span>
+          {onTrunk && <span className="badge badge--HEAD">HEAD</span>}
+          {trunkCheckout && !onTrunk && <CheckoutButton branch={trunk} />}
         </div>
       </div>
       {branches.length === 0 && <p className="empty">No branches.</p>}
@@ -375,6 +419,11 @@ function ApplyPanel({
   onDismiss: () => void;
 }) {
   const { phase } = progress;
+  const conflictFiles = progress.conflictFiles ?? [];
+  // Absent on a session persisted before this field existed — treat every
+  // listed file as unresolved rather than enabling Continue on a guess.
+  const unresolved = new Set(progress.unresolvedFiles ?? conflictFiles);
+  const allResolved = conflictFiles.length > 0 && unresolved.size === 0;
 
   return (
     <div className={`applying applying--${phase}`}>
@@ -383,26 +432,60 @@ function ApplyPanel({
         {progress.message}
       </p>
 
-      {phase === 'conflict' && progress.conflictFiles && progress.conflictFiles.length > 0 && (
+      {phase === 'conflict' && conflictFiles.length > 0 && (
         <ul className="conflicts">
-          {progress.conflictFiles.map((file) => (
-            <li key={file}>
-              <button
-                type="button"
-                className="conflicts__file"
-                onClick={() => vscodeApi.postMessage({ type: 'openFile', path: file })}
-              >
-                <code>{file}</code>
-              </button>
-            </li>
-          ))}
+          {conflictFiles.map((file) => {
+            const done = !unresolved.has(file);
+            return (
+              <li key={file} className={`conflicts__row${done ? ' conflicts__row--done' : ''}`}>
+                <span className="conflicts__mark" aria-hidden="true">
+                  {done ? '✓' : '✗'}
+                </span>
+                <button
+                  type="button"
+                  className="conflicts__file"
+                  title="Open as text, conflict markers and all"
+                  onClick={() => vscodeApi.postMessage({ type: 'openFile', path: file })}
+                >
+                  <code>{file}</code>
+                </button>
+                {done ? (
+                  <span className="conflicts__state">staged</span>
+                ) : (
+                  <button
+                    type="button"
+                    className="conflicts__resolve"
+                    title="Open in the three-way merge editor"
+                    onClick={() => vscodeApi.postMessage({ type: 'openMergeEditor', path: file })}
+                  >
+                    Resolve
+                  </button>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
 
       <div className="applying__actions">
         {phase === 'conflict' && (
           <>
-            <button type="button" onClick={onContinue}>
+            {/*
+              Disabled is a hint, not the guard: resume() re-reads the index
+              itself, since the file could conflict again between the last
+              index event and this click.
+            */}
+            <button
+              type="button"
+              className={allResolved ? 'publish' : undefined}
+              onClick={onContinue}
+              disabled={unresolved.size > 0}
+              title={
+                unresolved.size > 0
+                  ? `Still unresolved: ${[...unresolved].join(', ')}. Resolve and stage them first.`
+                  : 'Continue the rebase'
+              }
+            >
               Continue
             </button>
             <button type="button" onClick={onAbort}>
@@ -900,6 +983,27 @@ export function App() {
     [currentDisplay],
   );
 
+  /**
+   * Where HEAD is. `currentBranch` and `isCurrent` come straight from
+   * `gh stack view`, which reports the stack whether or not HEAD is inside it —
+   * so standing on the trunk, or on some branch entirely outside, are both
+   * positions to state rather than states to hide.
+   */
+  const head = useMemo(() => {
+    const name = stack?.currentBranch;
+    const branches = stack?.branches ?? [];
+    const index = branches.findIndex((b) => b.name === name);
+    return {
+      name,
+      onTrunk: !!name && name === stack?.trunk,
+      /** 1-based from the bottom, matching how the column is counted. */
+      position: index >= 0 ? index + 1 : 0,
+      total: branches.length,
+      /** Neither in the stack nor on its trunk — gh-stack can report this. */
+      outside: !!name && name !== stack?.trunk && index < 0,
+    };
+  }, [stack]);
+
   /** Branches in the tray that the stack currently holds — i.e. being removed. */
   const leaving = useMemo(
     () => new Set(trayOrder.filter((n) => byName.has(n))),
@@ -1129,6 +1233,26 @@ export function App() {
         </button>
       </div>
 
+      {head.name && (
+        <p className={head.outside ? 'warn' : 'here'}>
+          {head.outside ? (
+            <>
+              You are on <strong>{head.name}</strong>, which is not part of this stack. Check
+              out a branch below to work in it.
+            </>
+          ) : head.onTrunk ? (
+            <>
+              You are on <strong>{head.name}</strong>, the trunk this stack sits on.
+            </>
+          ) : (
+            <>
+              You are on <strong>{head.name}</strong> — {ordinal(head.position)} of {head.total}{' '}
+              in the stack.
+            </>
+          )}
+        </p>
+      )}
+
       {hasMerged && (
         <p className="warn">
           This stack has merged branches. Reordering around them is disabled — gh-stack
@@ -1167,20 +1291,29 @@ export function App() {
         onDragEnd={onDragEnd}
       >
         <div className="columns">
-          <StackColumn title="Current" trunk={stack.trunk} branches={stack.branches}>
+          {/* The column you navigate from: every row here is somewhere you can stand. */}
+          <StackColumn
+            title="Current"
+            trunk={stack.trunk}
+            branches={stack.branches}
+            onTrunk={head.onTrunk}
+            trunkCheckout={!busy}
+          >
             {currentDisplay.map((name, i) => {
               const branch = byName.get(name);
               return branch ? (
                 <li key={name} className={`row row--static ${branch.isCurrent ? 'row--current' : ''}`}>
-                  <Node index={i} />
+                  <Node index={i} isHead={branch.isCurrent} />
                   <span className="name">{branch.name}</span>
                   {branch.prNumber && <PrTag branch={branch} />}
+                  {branch.isCurrent && <span className="badge badge--HEAD">HEAD</span>}
+                  {!branch.isCurrent && <CheckoutButton branch={name} disabled={busy} />}
                 </li>
               ) : null;
             })}
           </StackColumn>
 
-          <StackColumn title="Proposed" trunk={stack.trunk} branches={stack.branches}>
+          <StackColumn title="Proposed" trunk={stack.trunk} branches={stack.branches} onTrunk={head.onTrunk}>
             <SortableContext items={displayOrder} strategy={verticalListSortingStrategy}>
               {displayOrder.map((name) => (
                 <BranchRow

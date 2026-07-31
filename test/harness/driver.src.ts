@@ -18,13 +18,16 @@ const candidates: CandidateBranch[] = [
 ];
 
 /**
- * Which empty state to render, chosen with `?view=` so all three are
- * reachable without editing this file:
+ * Which state to render, chosen with `?view=` so all of them are reachable
+ * without editing this file:
  *
- *   (default)     the stack view
+ *   (default)     the stack view — HEAD on feat/ui, the top branch
  *   ?view=init    no stack anywhere — the create-a-stack entry point
  *   ?view=outside a stack exists, but HEAD is not in it
  *   ?view=drift   a stack whose branches were adopted but never rebased
+ *   ?view=trunk   HEAD on the trunk rather than on any stack branch
+ *   ?view=away    HEAD on a branch gh-stack does not list at all
+ *   ?view=conflict a paused rebase, for the conflict panel
  */
 const view = new URLSearchParams(location.search).get('view') ?? '';
 
@@ -52,18 +55,73 @@ function sendStack() {
   }
 
   // gh-stack flags branches an init adopted but never rebased.
-  const result =
-    view === 'drift'
-      ? {
-          kind: 'ok',
-          stack: {
-            ...stack,
-            branches: stack.branches.map((b, i) => ({ ...b, needsRebase: i > 0 })),
-          },
-        }
-      : { kind: 'ok', stack };
+  const drifted = {
+    ...stack,
+    branches: stack.branches.map((b, i) => ({ ...b, needsRebase: i > 0 })),
+  };
 
+  // Both positions gh-stack reports without HEAD being on a stack branch: it
+  // prints the stack either way, so each is a place to stand, not an error.
+  const elsewhere = (currentBranch: string) => ({
+    ...stack,
+    currentBranch,
+    branches: stack.branches.map((b) => ({ ...b, isCurrent: false })),
+  });
+
+  const stacks: Record<string, unknown> = {
+    drift: drifted,
+    trunk: elsewhere(stack.trunk),
+    away: elsewhere('spike/cache'),
+  };
+
+  const result = { kind: 'ok', stack: stacks[view] ?? stack };
   window.postMessage({ type: 'stack', result, candidates, canPublish: true }, '*');
+
+  if (view === 'conflict') {
+    sendConflict(['shared.txt', 'src/one.ts']);
+  }
+}
+
+/**
+ * A paused rebase, so the conflict panel is reachable with no repository behind
+ * it. `resolved` is what the index would now report as staged — the harness
+ * moves files into it as Resolve is clicked, which is exactly what the real
+ * `.git/index` watcher does via ApplyRunner.refreshConflict.
+ */
+let conflictFiles: string[] = [];
+let resolvedFiles: string[] = [];
+
+function sendConflict(files?: string[]) {
+  if (files) {
+    conflictFiles = files;
+    resolvedFiles = [];
+    // The panel renders against a plan, so publish the one being "applied".
+    window.postMessage(
+      { type: 'plan', plan: computePlan(stack, ['feat/api', 'feat/auth', 'feat/ui'], candidates) },
+      '*',
+    );
+  }
+
+  const unresolved = conflictFiles.filter((f) => !resolvedFiles.includes(f));
+  const done = conflictFiles.length - unresolved.length;
+  window.postMessage(
+    {
+      type: 'apply',
+      progress: {
+        phase: 'conflict',
+        scope: 'local',
+        stepIndex: 0,
+        statuses: ['running', 'pending', 'pending'],
+        canUndo: true,
+        conflictFiles,
+        unresolvedFiles: unresolved,
+        message: unresolved.length
+          ? `Conflict on feat/auth. ${done} of ${conflictFiles.length} files resolved.`
+          : `Conflict on feat/auth. All ${conflictFiles.length} files resolved — continue to finish the rebase.`,
+      },
+    },
+    '*',
+  );
 }
 
 /**
@@ -130,6 +188,20 @@ function fakePushSubmit() {
     // Both are host-side: one shells out to gh, the other opens an apply
     // session. Logged so the button is visibly wired.
     console.log('[harness]', m.type, m.trunk ?? '', (m.branches ?? []).join(' '));
+  } else if (m.type === 'openMergeEditor') {
+    // Stand in for the whole loop: the merge editor opens, the merge is
+    // completed, the file is staged, and the index watcher reports it back.
+    console.log('[harness] openMergeEditor', m.path, '— treating as resolved');
+    if (!resolvedFiles.includes(m.path)) {
+      resolvedFiles.push(m.path);
+    }
+    setTimeout(() => sendConflict(), 250);
+  } else if (m.type === 'applyContinue') {
+    console.log('[harness] applyContinue');
+    fakeApply(['feat/api', 'feat/auth', 'feat/ui']);
+  } else if (m.type === 'applyAbort') {
+    console.log('[harness] applyAbort');
+    window.postMessage({ type: 'applyCleared' }, '*');
   } else if (m.type === 'openUrl' || m.type === 'openFile' || m.type === 'checkout') {
     // Host-side effects with no browser equivalent. Logged so a dead click is
     // distinguishable from one that fired.
