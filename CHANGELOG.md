@@ -1,5 +1,82 @@
 # Changelog
 
+## 0.3.0
+
+### Added
+
+- **A "you are here" indicator.** The stack view rendered every branch
+  identically, so the one you were actually standing on was indistinguishable
+  from the rest — on a three-branch stack you had to run `git branch` to find
+  out. The data was always there (`gh stack view --json` reports
+  `currentBranch` and per-branch `isCurrent`); it was just spent on a bold name
+  and a faint ring. Now the current row carries a **HEAD** pill and a filled
+  node, and a line above the columns reads `You are on feat/api — 2nd of 3 in
+  the stack.`
+
+  Standing on the trunk is a position too, not the no-stack case: `gh stack
+  view --json` still returns the whole stack with `currentBranch: "main"`, so
+  the trunk row gets the same treatment and the line reads `the trunk this
+  stack sits on`. Standing on a branch gh-stack does not list is the one case
+  rendered as a warning, since it means nothing you drag will affect where you
+  are.
+
+- **Add a branch to a stack that already exists.** The typed-in branch name was
+  only ever offered by the builder, so it disappeared the moment there was a
+  stack to add to — from then on, extending one meant a terminal. Dragging was
+  not the answer either: a branch created a moment ago is fully merged into
+  trunk, so `readCandidates` filters it out of the tray and it never appears to
+  drag.
+
+  **Add on top** under the tray runs `gh stack add <name>` — created if the
+  name is new, adopted if it is not, with the resulting command previewed
+  beside the field the way init's is. Top-only, because gh-stack refuses
+  anywhere else (`can only add branches to the top of the stack`, exit 5), so
+  the host checks the top branch out first instead of relaying that error.
+
+  Not an apply: no commit is rewritten, so there is no plan and nothing to
+  snapshot. An adopted branch lands flagged `needsRebase`, exactly as init
+  leaves one, and the drift banner — reworded, since it named only `gh stack
+  init` — offers the replay. Its own preflight refuses a dirty tree, which
+  `gh stack add` does not: the guard is for the checkout in front of it.
+
+- **Checkout without leaving the panel**, by three routes to the same guarded
+  handler. A `⇣` button appears on each row and on the trunk row when the
+  pointer is over it (and on keyboard focus, so it is not pointer-only); a
+  status bar item shows `$(git-branch) feat/api 2/3` and opens a picker;
+  `Restack: Check Out Branch in Stack` lists the stack top-down with trunk last
+  and the current branch ticked.
+
+  Checkout already existed — but only as a double-click on a row in the
+  *Proposed* column, advertised nowhere but a tooltip. It also now refuses
+  while a rebase is in progress, alongside the existing dirty-tree and
+  apply-in-flight refusals: checking out mid-rebase abandons it.
+
+### Changed
+
+- **Rebase conflicts are resolved inside the extension.** A conflict used to
+  hand you a static list of paths that opened as plain text, conflict markers
+  and all. You resolved them in the SCM view, came back, and guessed whether
+  *Continue* would take — the panel never noticed you had staged anything, and
+  pressing it too early just reprinted "Still unresolved: …".
+
+  Each conflicted file now has a **Resolve** button that opens VS Code's own
+  three-way merge editor (`git.openMergeEditor`, which handles the rebase case
+  by diffing `REBASE_HEAD` against `HEAD`). Its *Complete Merge* stages the
+  file, which is exactly what *Continue* requires.
+
+  The panel tracks that live. While paused, Restack watches `.git/index` and
+  re-reads the unmerged paths on every write, so files flip to `✓ staged` as
+  you go and *Continue* is disabled until none are left. The trigger is the
+  index, not the merge editor, so `git add` in a terminal or the ➕ in the SCM
+  view update the panel identically. Resolved files stay listed rather than
+  vanishing — a list that shrank would erase the record of what you had already
+  done.
+
+  `ApplyProgress` gained `unresolvedFiles` alongside the now-frozen
+  `conflictFiles`, and it persists like the rest of the session: a window
+  reload mid-conflict comes back with the right counts. The button state is a
+  hint only — `resume()` still re-reads the index as the authority.
+
 ## 0.2.1
 
 ### Added
