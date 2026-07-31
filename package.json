@@ -2,7 +2,7 @@
   "name": "restack",
   "displayName": "Restack",
   "description": "Drag to reorder GitHub stacked PRs. Shows the exact git rebase plan before running it, and can undo. Requires the gh CLI with gh-stack.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "felixzhang",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -72,6 +72,10 @@
       {
         "command": "restack.rebaseStack",
         "title": "Restack: Rebase Stack"
+      },
+      {
+        "command": "restack.removeStack",
+        "title": "Restack: Remove Stack"
       },
       {
         "command": "restack.showLog",

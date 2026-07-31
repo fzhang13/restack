@@ -41,10 +41,17 @@ button:disabled {
   gap: 6px;
 }
 
-/* Push the publish action away from the two local-only buttons: it is the one
-   here that leaves the machine. */
+/* Push the publish action away from the local-only buttons: it is the one here
+   that leaves the machine. */
 .toolbar__publish {
   margin-left: auto;
+}
+
+/* Coloured text on the ordinary secondary background, not a filled red button:
+   removing a stack keeps every branch and commit, so it does not warrant the
+   weight of a destructive control. */
+.toolbar__remove {
+  color: var(--vscode-editorError-foreground, #f85149);
 }
 
 .warn {

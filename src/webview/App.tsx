@@ -1107,6 +1107,15 @@ export function App() {
         </button>
         <button
           type="button"
+          className="toolbar__remove"
+          onClick={() => vscodeApi.postMessage({ type: 'removeStack' })}
+          disabled={busy}
+          title="Remove this stack from gh-stack's tracking. Every branch and commit is kept."
+        >
+          Remove stack
+        </button>
+        <button
+          type="button"
           className="publish toolbar__publish"
           onClick={() => vscodeApi.postMessage({ type: 'pushSubmit' })}
           disabled={!canPublish || busy}

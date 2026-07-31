@@ -4,8 +4,8 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { detectTrunk, initPreflight, readLocalStacks } from '../src/init.ts';
-import { initArgs } from '../src/plan.ts';
+import { detectTrunk, initPreflight, readLocalStacks, unstackPreflight } from '../src/init.ts';
+import { initArgs, unstackArgs } from '../src/plan.ts';
 
 /**
  * Like apply.test.ts, these run against real repositories. The whole job of
@@ -214,4 +214,86 @@ test('initPreflight refuses outside a git repository', async (t) => {
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
 
   assert.match((await initPreflight(cwd, 'main', ['feat/one'])) ?? '', /not a git repository/i);
+});
+
+/**
+ * Removing a stack. As above, `gh stack unstack` itself is never run — these
+ * cover the guards in front of it. A stack with one branch recorded is enough
+ * for every case: the command takes no branch arguments, only the file's
+ * presence matters.
+ */
+function makeStackedRepo(): string {
+  const cwd = makeRepo();
+  branch(cwd, 'feat/one');
+  writeMetadata(cwd, [
+    {
+      trunk: { branch: 'main', head: git(cwd, 'rev-parse', 'main') },
+      branches: [{ branch: 'feat/one', base: git(cwd, 'rev-parse', 'main') }],
+    },
+  ]);
+  return cwd;
+}
+
+test('unstackArgs builds the gh stack unstack command for each scope', () => {
+  assert.deepEqual(unstackArgs(true), ['stack', 'unstack', '--local']);
+  assert.deepEqual(unstackArgs(false), ['stack', 'unstack']);
+});
+
+test('unstackPreflight accepts a clean repository with a stack', async (t) => {
+  const cwd = makeStackedRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  assert.equal(await unstackPreflight(cwd, 'local'), undefined);
+});
+
+test('unstackPreflight refuses with no .git/gh-stack to remove', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  assert.match((await unstackPreflight(cwd, 'local')) ?? '', /no stack to remove/i);
+});
+
+test('unstackPreflight refuses a dirty working tree', async (t) => {
+  const cwd = makeStackedRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  writeFileSync(join(cwd, 'README.md'), 'edited\n');
+
+  // gh-stack's unstack path can check out a branch, and its failure modes
+  // include one blocked partway.
+  assert.match((await unstackPreflight(cwd, 'local')) ?? '', /uncommitted changes/i);
+});
+
+test('unstackPreflight refuses mid-rebase', async (t) => {
+  const cwd = makeStackedRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  // A real conflicted rebase: feat/two and main both touch the same file.
+  git(cwd, 'checkout', '-b', 'feat/two');
+  commit(cwd, 'clash.txt', 'theirs\n', 'feat: clash');
+  git(cwd, 'checkout', 'main');
+  commit(cwd, 'clash.txt', 'ours\n', 'main: clash');
+  try {
+    git(cwd, 'rebase', 'main', 'feat/two');
+  } catch {
+    // Expected: the rebase stops on the conflict, which is the state under test.
+  }
+
+  assert.match((await unstackPreflight(cwd, 'local')) ?? '', /rebase is in progress/i);
+});
+
+test('unstackPreflight refuses a remote removal with no origin', async (t) => {
+  const cwd = makeStackedRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  // Local is fine without a remote; only unstacking the PRs needs one.
+  assert.equal(await unstackPreflight(cwd, 'local'), undefined);
+  assert.match((await unstackPreflight(cwd, 'remote')) ?? '', /no `?origin`? remote/i);
+});
+
+test('unstackPreflight refuses outside a git repository', async (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'restack-unstack-bare-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  assert.match((await unstackPreflight(cwd, 'local')) ?? '', /not a git repository/i);
 });

@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.2.1
+
+### Added
+
+- **Remove stack**, the counterpart 0.2.0's init never had. Once a stack existed
+  there was no way out of it from the extension — no button, no command, only
+  `gh stack unstack` in a terminal or hand-editing `.git/gh-stack`. Sharpest
+  right after an init that adopted the wrong branches or the wrong trunk. The
+  toolbar button now runs that command on the stack you are in, and the palette
+  has `Restack: Remove Stack`.
+
+  Not an apply: unstacking rewrites no commits and moves no branch refs, so there
+  is no plan to show, no conflict to pause on, and nothing a snapshot could
+  restore. The confirmation splits by reach the way apply does — **Remove
+  Locally** stops at `.git/gh-stack`, **Remove & Unstack PRs** also detaches the
+  pull requests on GitHub and is only offered when there are PRs and an origin.
+
+  Guarded by its own preflight: no metadata file, a dirty tree (gh-stack's
+  unstack path can check out a branch), or a rebase in progress all refuse. The
+  rebase check runs *before* the dirty-tree check, since a conflicted rebase
+  leaves unmerged files and would otherwise be reported as the symptom rather
+  than the cause. And because GitHub leaves queued and auto-merge PRs stacked —
+  keeping local tracking too, while still exiting zero — the stack is re-read
+  afterwards instead of the exit code being trusted.
+
 ## 0.2.0
 
 ### Added

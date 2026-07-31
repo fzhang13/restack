@@ -3,9 +3,17 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readStack } from './stack';
 import { readCandidates, readBranchCandidates } from './candidates';
-import { computePlan, initArgs } from './plan';
+import { computePlan, initArgs, unstackArgs } from './plan';
 import { ApplyRunner, hasOrigin, preflight, type PersistedSession } from './apply';
-import { detectTrunk, initPreflight, readLocalStacks, runInit } from './init';
+import {
+  detectTrunk,
+  initPreflight,
+  readLocalStacks,
+  runInit,
+  runUnstack,
+  unstackPreflight,
+  type UnstackScope,
+} from './init';
 import type {
   ApplyScope,
   CandidateBranch,
@@ -130,6 +138,9 @@ class StackViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'rebaseStack':
           void this.handleRebaseStack();
+          break;
+        case 'removeStack':
+          void this.handleRemoveStack();
           break;
         case 'publish':
           void this.handlePublish();
@@ -382,6 +393,109 @@ class StackViewProvider implements vscode.WebviewViewProvider {
       await this.runner.start(cwd, this.ghPath(), stack, plan, order, 'local');
       await this.refresh();
     });
+  }
+
+  /**
+   * Dissolve the stack — the missing counterpart to init.
+   *
+   * Deliberately not an apply. `gh stack unstack` rewrites no commits and moves
+   * no branch refs; it deletes a record. There is no cascade to plan, no
+   * conflict to pause on, and nothing a snapshot could restore that is not
+   * already sitting untouched on disk. So this follows runInit's shape: one
+   * guarded command, then a refresh.
+   *
+   * The scope split mirrors apply's. Local stops at `.git/gh-stack`; remote also
+   * detaches the pull requests on GitHub, which nothing here can take back.
+   */
+  /** Palette entry point: the view may never have loaded a stack. */
+  async removeStack(): Promise<void> {
+    if (!this.lastStack) {
+      await this.refresh();
+    }
+    await this.handleRemoveStack();
+  }
+
+  private async handleRemoveStack(): Promise<void> {
+    const cwd = this.workspacePath();
+    const stack = this.lastStack;
+    if (!cwd || !stack) {
+      return;
+    }
+
+    if (this.runner.active) {
+      void vscode.window.showWarningMessage(
+        'Restack: an apply is in progress. Finish or dismiss it first.',
+      );
+      return;
+    }
+
+    const scope = await this.confirmRemove(cwd, stack);
+    if (!scope) {
+      return;
+    }
+
+    await this.guard(async () => {
+      const blocked = await unstackPreflight(cwd, scope);
+      if (blocked) {
+        void vscode.window.showErrorMessage(`Restack: ${blocked}`);
+        return;
+      }
+
+      const local = scope === 'local';
+      this.log.appendLine(`Removing the stack: gh ${unstackArgs(local).join(' ')}`);
+      const failure = await runUnstack(cwd, this.ghPath(), local);
+      if (failure) {
+        void vscode.window.showErrorMessage(`Restack: ${failure}`);
+        this.log.show(true);
+      }
+
+      // Re-read either way. A remote unstack that GitHub only partly allowed —
+      // queued PRs and ones with auto-merge on are left stacked — exits zero and
+      // keeps the whole stack, local tracking included.
+      await this.refresh();
+      if (!failure && this.lastStack) {
+        void vscode.window.showWarningMessage(
+          'Restack: the stack is still here. GitHub leaves queued PRs and ones with ' +
+            'auto-merge enabled stacked, and gh-stack then keeps local tracking too. ' +
+            'See the Restack output channel.',
+        );
+        this.log.show(true);
+      }
+    });
+  }
+
+  private async confirmRemove(cwd: string, stack: Stack): Promise<UnstackScope | undefined> {
+    const names = stack.branches.map((b) => b.name);
+    const withPrs = stack.branches.filter((b) => b.prNumber);
+    // The remote half only has something to do when there are PRs to detach,
+    // and somewhere to reach them.
+    const canUnstackRemote = withPrs.length > 0 && (await hasOrigin(cwd));
+
+    const remoteNote = canUnstackRemote
+      ? `"Remove & Unstack PRs" additionally runs \`gh stack unstack\`, which detaches ` +
+        `${withPrs.map((b) => `#${b.prNumber}`).join(', ')} from the stack on GitHub. ` +
+        `Restack cannot undo that.`
+      : withPrs.length === 0
+        ? `No branch here has a pull request, so there is nothing on GitHub to unstack.`
+        : `This repository has no origin remote, so there is nothing on GitHub to unstack.`;
+
+    const choice = await vscode.window.showWarningMessage(
+      `Remove this stack of ${names.length} branch${names.length === 1 ? '' : 'es'}?`,
+      {
+        modal: true,
+        detail:
+          `Removes the stack from gh-stack's tracking. Every branch and every commit ` +
+          `stays exactly where it is — ${names.join(', ')} remain as ordinary branches ` +
+          `on ${stack.trunk}. Nothing is rebased and nothing is deleted.\n\n` +
+          `"Remove Locally" runs \`gh stack unstack --local\`, which touches only ` +
+          `.git/gh-stack.\n\n${remoteNote}`,
+      },
+      ...(canUnstackRemote ? ['Remove Locally', 'Remove & Unstack PRs'] : ['Remove Locally']),
+    );
+
+    if (choice === 'Remove Locally') return 'local';
+    if (choice === 'Remove & Unstack PRs') return 'remote';
+    return undefined;
   }
 
   private async handleApply(order: string[]): Promise<void> {
@@ -672,6 +786,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('restack.refresh', () => provider.refresh()),
     vscode.commands.registerCommand('restack.pushSubmit', () => provider.pushSubmit()),
     vscode.commands.registerCommand('restack.rebaseStack', () => provider.rebaseStack()),
+    vscode.commands.registerCommand('restack.removeStack', () => provider.removeStack()),
     vscode.commands.registerCommand('restack.showLog', () => log.show()),
   );
 
