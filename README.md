@@ -377,7 +377,10 @@ these it will tell you what is missing rather than doing anything:
 - Built against **gh-stack v0.1.0**. That schema is pre-1.0 and will drift —
   the parser is deliberately tolerant, but check here after a gh-stack upgrade.
 
-Set `restack.ghPath` if `gh` is not on your `PATH`.
+Set `restack.ghPath` if `gh` is not on your `PATH`. It is a machine-scoped
+setting, so it lives in your user settings and a workspace cannot override it —
+Restack executes that path on startup, and a repository you have just cloned
+should not get to choose what runs.
 
 ## Development
 

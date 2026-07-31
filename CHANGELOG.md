@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.2
+
+### Security
+
+- **A cloned repository could run code on startup.** `restack.ghPath` had no
+  declared `scope`, so it defaulted to `window` — which meant a workspace's own
+  `.vscode/settings.json` could set it. Restack activates on
+  `onStartupFinished` and immediately runs `gh stack view --json` to read the
+  stack, with the workspace as the working directory, so a *relative* path
+  resolved inside the repository. Cloning a repo that shipped
+  `{"restack.ghPath": "./payload.sh"}` and opening it was enough: no stack
+  needed to exist, and no button had to be pressed.
+
+  The setting is now `scope: "machine"`, so it lives in user settings and a
+  workspace cannot override it — the same treatment VS Code gives `git.path`,
+  for the same reason. If you set `ghPath` because `gh` is not on your `PATH`,
+  it has to be in your user settings now; a workspace-level value is warned
+  about once and then ignored.
+
+  Reachable only in a trusted workspace, since an extension that declares no
+  `capabilities` is disabled in Restricted Mode — but that was true by accident
+  rather than by intent, so `untrustedWorkspaces.supported: false` is now
+  declared outright. Restack runs git and `gh` against whatever repository is
+  open, and that is not something to do on trust nobody granted.
+
 ## 0.3.1
 
 ### Fixed
