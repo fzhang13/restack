@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.0
+
+### Added
+
+- **Create a stack from the empty state.** A repo with no stack used to show
+  `Not on a stack` and a Retry button. It now shows a builder: pick a trunk,
+  drag local branches in bottom-first, name a branch that does not exist yet,
+  and run the `gh stack init` command previewed above the button. Preview and
+  execution share one `initArgs`, so they cannot drift.
+- **Rebase stack**, offered when gh-stack reports drift. `gh stack init` adopts
+  branches without rebasing them, which used to leave a freshly created stack
+  showing ⚠ markers and "Drag a branch to see the plan" — a dead end, because
+  the planner only emitted steps when the *order* changed. `computePlan` now
+  takes `{ force: true }`, replaying drifted branches and everything above them
+  onto their recorded bases, through the usual plan → apply path with its
+  snapshot, conflict pause, and undo.
+- Standing outside a stack is distinguished from having none. `gh stack view`
+  reports the same error either way, so Restack reads `.git/gh-stack` directly:
+  when stacks exist, they are listed with **Check out** rather than only an
+  offer to create another.
+- Init is guarded by a preflight. Notably it refuses on a dirty working tree:
+  `gh stack init` writes its metadata *before* checking out the top branch, so a
+  checkout blocked by a dirty file leaves a half-created stack.
+
 ## 0.1.1
 
 ### Fixed

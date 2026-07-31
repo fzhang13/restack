@@ -17,11 +17,53 @@ const candidates: CandidateBranch[] = [
   { name: 'wip/empty', base: 'd'.repeat(40), commitCount: 0 },
 ];
 
+/**
+ * Which empty state to render, chosen with `?view=` so all three are
+ * reachable without editing this file:
+ *
+ *   (default)     the stack view
+ *   ?view=init    no stack anywhere — the create-a-stack entry point
+ *   ?view=outside a stack exists, but HEAD is not in it
+ *   ?view=drift   a stack whose branches were adopted but never rebased
+ */
+const view = new URLSearchParams(location.search).get('view') ?? '';
+
+/** Stacks gh-stack has recorded, for the "standing outside one" case. */
+const localStacks = [{ trunk: 'main', branches: ['feat/auth', 'feat/api', 'feat/ui'] }];
+
 function sendStack() {
-  window.postMessage(
-    { type: 'stack', result: { kind: 'ok', stack }, candidates, canPublish: true },
-    '*',
-  );
+  if (view === 'init' || view === 'outside') {
+    window.postMessage(
+      {
+        type: 'stack',
+        result: {
+          kind: 'no-stack',
+          message: 'current branch "main" is not part of a stack',
+          trunk: 'main',
+          localBranches: ['main', 'develop', 'spike/cache', 'chore/deps'],
+          stacks: view === 'outside' ? localStacks : [],
+        },
+        candidates,
+        canPublish: true,
+      },
+      '*',
+    );
+    return;
+  }
+
+  // gh-stack flags branches an init adopted but never rebased.
+  const result =
+    view === 'drift'
+      ? {
+          kind: 'ok',
+          stack: {
+            ...stack,
+            branches: stack.branches.map((b, i) => ({ ...b, needsRebase: i > 0 })),
+          },
+        }
+      : { kind: 'ok', stack };
+
+  window.postMessage({ type: 'stack', result, candidates, canPublish: true }, '*');
 }
 
 /**
@@ -84,6 +126,10 @@ function fakePushSubmit() {
     fakePushSubmit();
   } else if (m.type === 'applyDismiss') {
     window.postMessage({ type: 'applyCleared' }, '*');
+  } else if (m.type === 'initStack' || m.type === 'rebaseStack') {
+    // Both are host-side: one shells out to gh, the other opens an apply
+    // session. Logged so the button is visibly wired.
+    console.log('[harness]', m.type, m.trunk ?? '', (m.branches ?? []).join(' '));
   } else if (m.type === 'openUrl' || m.type === 'openFile' || m.type === 'checkout') {
     // Host-side effects with no browser equivalent. Logged so a dead click is
     // distinguishable from one that fired.

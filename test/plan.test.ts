@@ -247,3 +247,60 @@ test('a branch with no known base is skipped rather than rebased blindly', () =>
   assert.ok(!rebases.some((s) => s.branch === 'ghost'));
   assert.deepEqual(plan.insertedBranches, ['ghost']);
 });
+
+/**
+ * `gh stack init` adopts divergent branches into stack order without rebasing
+ * them, so the order is already right and the branches are not actually on
+ * each other. A forced plan is what closes that gap.
+ */
+function withDrift(drifted: string[]) {
+  const stack = parseStack(fixture);
+  return {
+    ...stack,
+    branches: stack.branches.map((b) => ({ ...b, needsRebase: drifted.includes(b.name) })),
+  };
+}
+
+test('a forced plan replays drifted branches the order alone would skip', () => {
+  const stack = withDrift(['feat/api']);
+  const order = stack.branches.map((b) => b.name);
+
+  // Without force this is a no-op: nothing moved.
+  assert.equal(computePlan(stack, order).isNoop, true);
+
+  const plan = computePlan(stack, order, [], { force: true });
+  assert.equal(plan.isNoop, false);
+
+  const rebases = plan.steps.filter((s) => s.kind === 'rebase');
+  // feat/auth is not drifted and sits below the one that is, so it is left
+  // alone. feat/ui replays because its parent's tip is about to move.
+  assert.deepEqual(rebases.map((s) => s.branch), ['feat/api', 'feat/ui']);
+
+  const api = stack.branches.find((b) => b.name === 'feat/api')!;
+  // Still anchored to the recorded SHA, exactly as a reorder would be.
+  assert.equal(rebases[0].command, `git rebase --onto feat/auth ${api.base} feat/api`);
+  // And the metadata write still comes along, or gh-stack keeps the stale bases.
+  assert.ok(plan.steps.some((s) => s.kind === 'metadata'));
+});
+
+test('a forced plan with no drift is still a no-op', () => {
+  const stack = parseStack(fixture);
+  const order = stack.branches.map((b) => b.name);
+
+  // isNoop gates the Apply button and the host's own staleness check, so
+  // claiming work exists here would offer an apply that runs no rebases.
+  assert.equal(computePlan(stack, order, [], { force: true }).isNoop, true);
+});
+
+test('force does not change what a reorder plans', () => {
+  const stack = withDrift(['feat/api']);
+  const reordered = ['feat/api', 'feat/auth', 'feat/ui'];
+
+  const plain = computePlan(stack, reordered);
+  const forced = computePlan(stack, reordered, [], { force: true });
+
+  assert.deepEqual(
+    forced.steps.map((s) => s.command),
+    plain.steps.map((s) => s.command),
+  );
+});

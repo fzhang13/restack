@@ -23,11 +23,13 @@ import type {
   ApplyProgress,
   CandidateBranch,
   HostMessage,
+  LocalStackSummary,
   Plan,
   Stack,
   StackBranch,
   StackResult,
 } from '../model';
+import { initArgs } from '../plan';
 import { vscodeApi } from './vscode';
 import './styles.css';
 
@@ -46,6 +48,8 @@ function toModelOrder(names: string[]): string[] {
 
 /** Droppable id for the tray, distinct from any branch name. */
 const TRAY_ID = '__tray__';
+/** The init view's stack column, droppable so the first branch has a target. */
+const STACK_ID = '__stack__';
 
 const EMPTY_PLAN: Plan = {
   steps: [],
@@ -104,12 +108,29 @@ interface RowProps {
   draggable: boolean;
   moved: boolean;
   colorIndex: number;
+  /** A branch that does not exist yet, typed into the init view. */
+  isNew?: boolean;
+  /**
+   * Drop the PR tag. Set for every row in the init view: nothing there has
+   * been submitted yet, so "no PR" states the obvious about all of them and
+   * says it about branches git has never heard of.
+   */
+  hidePr?: boolean;
   /** Move this row one position; `null` when the direction is unavailable. */
   onNudge?: (delta: number) => void;
   onCheckout?: () => void;
 }
 
-function BranchRow({ branch, draggable, moved, colorIndex, onNudge, onCheckout }: RowProps) {
+function BranchRow({
+  branch,
+  draggable,
+  moved,
+  colorIndex,
+  isNew,
+  hidePr,
+  onNudge,
+  onCheckout,
+}: RowProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: branch.name,
     disabled: !draggable,
@@ -123,6 +144,7 @@ function BranchRow({ branch, draggable, moved, colorIndex, onNudge, onCheckout }
   };
 
   const badges: string[] = [];
+  if (isNew) badges.push('new');
   if (branch.isMerged) badges.push('merged');
   else if (branch.isQueued) badges.push('queued');
   if (branch.needsRebase) badges.push('needs rebase');
@@ -164,7 +186,7 @@ function BranchRow({ branch, draggable, moved, colorIndex, onNudge, onCheckout }
     >
       <Node index={colorIndex} />
       <span className="name">{branch.name}</span>
-      <PrTag branch={branch} />
+      {!hidePr && <PrTag branch={branch} />}
       {badges.map((b) => (
         <span key={b} className={`badge badge--${b.replace(/\s+/g, '-')}`}>
           {b}
@@ -178,13 +200,22 @@ function StackColumn({
   title,
   trunk,
   branches,
+  droppableId,
   children,
 }: {
   title: string;
   trunk: string;
   branches: StackBranch[];
+  /**
+   * Makes the graph itself a drop target. Only the init view needs this: its
+   * column starts empty, and with nothing but rows to drop onto there would be
+   * no way to put the first branch in.
+   */
+  droppableId?: string;
   children?: React.ReactNode;
 }) {
+  const { setNodeRef, isOver } = useDroppable({ id: droppableId ?? '', disabled: !droppableId });
+
   return (
     <section className="column">
       <h2 className="column__title">{title}</h2>
@@ -194,7 +225,10 @@ function StackColumn({
         into the row gap, so the line travels with the row it belongs to while
         dnd-kit animates a drag instead of sitting still behind it.
       */}
-      <div className="graph">
+      <div
+        ref={setNodeRef}
+        className={['graph', isOver ? 'graph--over' : ''].filter(Boolean).join(' ')}
+      >
         <ol className="rows">{children}</ol>
         <div className="trunk">
           <span className="trunk__node" aria-hidden="true" />
@@ -490,6 +524,296 @@ function Message({ title, body }: { title: string; body: string }) {
   );
 }
 
+/**
+ * The empty state, for a repository with no stack under the current branch.
+ *
+ * Built from the same drag machinery as the reorder view rather than a native
+ * QuickPick, because the order *is* the stack: `gh stack init a b c` takes its
+ * branches bottom-to-top, and a multi-select returns list order, not the order
+ * you clicked. Dragging is the only interaction where what you see is the
+ * argument list.
+ *
+ * Two situations arrive here as the same gh-stack error. When `stacks` is
+ * non-empty the repository has stacks and the user is just standing outside
+ * one, so checking one out is offered first and creating another is secondary.
+ */
+function InitView({
+  message,
+  trunk: detectedTrunk,
+  localBranches,
+  stacks,
+  candidates,
+}: {
+  message: string;
+  trunk?: string;
+  localBranches: string[];
+  stacks: LocalStackSummary[];
+  candidates: CandidateBranch[];
+}) {
+  const [trunk, setTrunk] = useState(detectedTrunk ?? 'main');
+  /** Branches picked for the new stack, top-down like the reorder view. */
+  const [picked, setPicked] = useState<string[]>([]);
+  const [available, setAvailable] = useState<string[]>(() => candidates.map((c) => c.name));
+  /** Branches typed in rather than dragged; gh-stack creates these. */
+  const [created, setCreated] = useState<string[]>([]);
+  const [draft, setDraft] = useState('');
+  const [dragging, setDragging] = useState<string | null>(null);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  const candidatesByName = useMemo(
+    () => new Map(candidates.map((c) => [c.name, c])),
+    [candidates],
+  );
+
+  // Changing the trunk cannot leave it sitting in the stack it is the base of.
+  useEffect(() => {
+    setPicked((p) => p.filter((n) => n !== trunk));
+    setAvailable((a) => a.filter((n) => n !== trunk));
+  }, [trunk]);
+
+  const onDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      setDragging(null);
+      const { active, over } = event;
+      if (!over) {
+        return;
+      }
+      const id = String(active.id);
+      const overId = String(over.id);
+      if (id === overId) {
+        return;
+      }
+
+      const inStack = picked.includes(id);
+      const toTray = overId === TRAY_ID || available.includes(overId);
+
+      if (inStack && toTray) {
+        setPicked(picked.filter((n) => n !== id));
+        // A typed-in branch does not exist yet, so there is nothing to park in
+        // the tray — dropping it there discards it.
+        if (created.includes(id)) {
+          setCreated(created.filter((n) => n !== id));
+        } else {
+          setAvailable([...available, id]);
+        }
+        return;
+      }
+
+      if (!inStack && !toTray) {
+        // Dropping on the column itself rather than a row — the only option
+        // while the stack is empty — appends to the bottom.
+        const at = overId === STACK_ID ? -1 : picked.indexOf(overId);
+        setAvailable(available.filter((n) => n !== id));
+        const next = [...picked];
+        next.splice(at < 0 ? next.length : at, 0, id);
+        setPicked(next);
+        return;
+      }
+
+      if (inStack) {
+        const from = picked.indexOf(id);
+        const to = picked.indexOf(overId);
+        if (to >= 0 && from !== to) {
+          setPicked(arrayMove(picked, from, to));
+        }
+        return;
+      }
+
+      const from = available.indexOf(id);
+      const to = available.indexOf(overId);
+      if (from >= 0 && to >= 0 && from !== to) {
+        setAvailable(arrayMove(available, from, to));
+      }
+    },
+    [picked, available, created],
+  );
+
+  const addDraft = useCallback(() => {
+    const name = draft.trim();
+    // Only a name nothing else already claims: the host would refuse a
+    // duplicate, and silently ignoring one here would look like a no-op.
+    if (!name || picked.includes(name) || available.includes(name) || name === trunk) {
+      return;
+    }
+    setPicked([name, ...picked]);
+    setCreated([...created, name]);
+    setDraft('');
+  }, [draft, picked, available, created, trunk]);
+
+  /** Bottom-to-top, which is the order gh stack init takes its arguments in. */
+  const order = toModelOrder(picked);
+  const command = `gh ${initArgs(trunk, order).join(' ')}`;
+
+  const rowFor = useCallback(
+    (name: string): StackBranch => ({
+      name,
+      base: candidatesByName.get(name)?.base ?? '',
+      isCurrent: false,
+      isMerged: false,
+      isQueued: false,
+      needsRebase: false,
+    }),
+    [candidatesByName],
+  );
+
+  return (
+    <div className="app">
+      {stacks.length > 0 ? (
+        <section className="stacks">
+          <h2 className="column__title">Stacks in this repository</h2>
+          <p className="stacks__hint">{message}</p>
+          <ul className="stacks__list">
+            {stacks.map((s, i) => (
+              <li key={i} className="stacks__item">
+                <span className="stacks__path">
+                  {[s.trunk, ...s.branches].map((name, j) => (
+                    <span key={name}>
+                      {j > 0 && <span className="stacks__arrow"> ← </span>}
+                      <span className={j === 0 ? 'stacks__trunk' : ''}>{name}</span>
+                    </span>
+                  ))}
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    vscodeApi.postMessage({
+                      type: 'checkout',
+                      // The top branch: checking it out puts HEAD in the stack,
+                      // which is all `gh stack view` needs to report it.
+                      branch: s.branches[s.branches.length - 1],
+                    })
+                  }
+                >
+                  Check out
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : (
+        <Message title="No stack yet" body={message} />
+      )}
+
+      <section className="init">
+        <h2 className="column__title">
+          {stacks.length > 0 ? 'Create another stack' : 'Create a stack'}
+        </h2>
+        <p className="init__hint">
+          Drag branches into the stack, bottom first. The bottom branch sits on the trunk;
+          each one above it is based on the one below.
+        </p>
+
+        <div className="init__row">
+          <label htmlFor="init-trunk">Trunk</label>
+          <select
+            id="init-trunk"
+            value={trunk}
+            onChange={(e) => setTrunk(e.target.value)}
+            disabled={localBranches.length === 0}
+          >
+            {(localBranches.length > 0 ? localBranches : [trunk]).map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragStart={(event: DragStartEvent) => setDragging(String(event.active.id))}
+          onDragCancel={() => setDragging(null)}
+          onDragEnd={onDragEnd}
+        >
+          <div className="columns columns--single">
+            <StackColumn
+              title="New stack"
+              trunk={trunk}
+              branches={picked.map(rowFor)}
+              droppableId={STACK_ID}
+            >
+              <SortableContext items={picked} strategy={verticalListSortingStrategy}>
+                {picked.map((name, i) => (
+                  <BranchRow
+                    key={name}
+                    branch={rowFor(name)}
+                    draggable
+                    moved={false}
+                    isNew={created.includes(name)}
+                    hidePr
+                    colorIndex={i}
+                  />
+                ))}
+              </SortableContext>
+            </StackColumn>
+          </div>
+
+          <Tray
+            names={available}
+            candidates={candidatesByName}
+            byName={new Map()}
+            enabled
+            leaving={new Set()}
+          />
+
+          <DragOverlay>
+            {dragging ? (
+              <div className="row row--overlay">
+                <Node index={picked.indexOf(dragging)} />
+                <span className="name">{dragging}</span>
+              </div>
+            ) : null}
+          </DragOverlay>
+        </DndContext>
+
+        <div className="init__row">
+          <label htmlFor="init-new">New branch</label>
+          <input
+            id="init-new"
+            type="text"
+            placeholder="feat/my-change"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                addDraft();
+              }
+            }}
+          />
+          <button type="button" onClick={addDraft} disabled={!draft.trim()}>
+            Add
+          </button>
+        </div>
+
+        <div className="init__preview">
+          <code>{command}</code>
+          <span className="step__note">
+            {picked.length === 0
+              ? 'Add at least one branch.'
+              : 'Adopts branches that exist and creates the ones that do not. ' +
+                'Adopting does not rebase them — Restack offers that next.'}
+          </span>
+        </div>
+
+        <button
+          type="button"
+          className="publish init__go"
+          onClick={() => vscodeApi.postMessage({ type: 'initStack', trunk, branches: order })}
+          disabled={picked.length === 0}
+        >
+          Initialize stack
+        </button>
+      </section>
+    </div>
+  );
+}
+
 export function App() {
   const [result, setResult] = useState<StackResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -715,9 +1039,22 @@ export function App() {
     return <div className="app"><p className="empty">Reading stack…</p></div>;
   }
 
+  // No stack under the current branch is not an error — it is where every
+  // repository starts, so it gets an entry point rather than a dead end.
+  if (result?.kind === 'no-stack') {
+    return (
+      <InitView
+        message={result.message}
+        trunk={result.trunk}
+        localBranches={result.localBranches ?? []}
+        stacks={result.stacks ?? []}
+        candidates={candidates}
+      />
+    );
+  }
+
   if (result && result.kind !== 'ok') {
     const titles: Record<string, string> = {
-      'no-stack': 'Not on a stack',
       'not-a-repo': 'Not a git repository',
       'gh-missing': 'gh CLI unavailable',
       error: 'Could not read stack',
@@ -747,6 +1084,13 @@ export function App() {
   const editable = !hasMerged && !busy;
   /** Branches leaving the stack that already have a PR open against a parent. */
   const leavingWithPrs = [...leaving].filter((n) => byName.get(n)?.prNumber);
+  /**
+   * Branches recorded in the stack but not actually sitting on their parent —
+   * what `gh stack init` leaves behind when it adopts divergent branches. Only
+   * offered while the order is untouched: with a reorder pending, the plan
+   * below already replays these branches.
+   */
+  const drifted = dirty ? [] : stack.branches.filter((b) => b.needsRebase).map((b) => b.name);
 
   return (
     <div className="app">
@@ -781,6 +1125,20 @@ export function App() {
           This stack has merged branches. Reordering around them is disabled — gh-stack
           rejects inserting next to a merged branch.
         </p>
+      )}
+
+      {drifted.length > 0 && (
+        <div className="warn">
+          <p className="warn__text">
+            {drifted.join(', ')} {drifted.length === 1 ? 'is' : 'are'} not sitting on{' '}
+            {drifted.length === 1 ? 'its' : 'their'} recorded parent. A stack created by
+            adopting existing branches starts this way — <code>gh stack init</code> records
+            the order without rebasing.
+          </p>
+          <button type="button" onClick={() => vscodeApi.postMessage({ type: 'rebaseStack' })} disabled={busy}>
+            Rebase stack
+          </button>
+        </div>
       )}
 
       {leavingWithPrs.length > 0 && (

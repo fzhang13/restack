@@ -18,32 +18,48 @@ const execFileAsync = promisify(execFile);
  * than breaking the whole view.
  */
 export async function readCandidates(cwd: string, stack: Stack): Promise<CandidateBranch[]> {
+  return readBranchCandidates(cwd, stack.trunk, new Set(stack.branches.map((b) => b.name)));
+}
+
+/**
+ * The same enumeration without a Stack to read it from.
+ *
+ * Needed by the init flow, which lists branches in a repository that has no
+ * stack at all — so there is nothing to pass `readCandidates`. The filters
+ * carry over unchanged and are, if anything, more important there: `gh stack
+ * init` will happily adopt a branch sharing no history with trunk, producing a
+ * stack whose branches cannot be rebased onto each other.
+ */
+export async function readBranchCandidates(
+  cwd: string,
+  trunk: string,
+  exclude: Set<string> = new Set(),
+): Promise<CandidateBranch[]> {
   const names = await localBranches(cwd);
   if (names.length === 0) {
     return [];
   }
 
-  const inStack = new Set(stack.branches.map((b) => b.name));
   const candidates: CandidateBranch[] = [];
 
   for (const name of names) {
-    if (name === stack.trunk || inStack.has(name)) {
+    if (name === trunk || exclude.has(name)) {
       continue;
     }
 
     // Fully merged into trunk: rebasing it would replay nothing, so it is not
     // a meaningful stack member. This also filters out the long tail of stale
     // local branches that would otherwise dominate the tray.
-    if (await isAncestor(cwd, name, stack.trunk)) {
+    if (await isAncestor(cwd, name, trunk)) {
       continue;
     }
 
-    const base = await mergeBase(cwd, name, stack.trunk);
+    const base = await mergeBase(cwd, name, trunk);
     if (!base) {
       continue; // No shared history with trunk; nothing sane to rebase onto.
     }
 
-    candidates.push({ name, base, commitCount: await countCommits(cwd, stack.trunk, name) });
+    candidates.push({ name, base, commitCount: await countCommits(cwd, trunk, name) });
   }
 
   return candidates;

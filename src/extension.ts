@@ -2,9 +2,10 @@ import * as vscode from 'vscode';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readStack } from './stack';
-import { readCandidates } from './candidates';
-import { computePlan } from './plan';
+import { readCandidates, readBranchCandidates } from './candidates';
+import { computePlan, initArgs } from './plan';
 import { ApplyRunner, hasOrigin, preflight, type PersistedSession } from './apply';
+import { detectTrunk, initPreflight, readLocalStacks, runInit } from './init';
 import type {
   ApplyScope,
   CandidateBranch,
@@ -123,6 +124,12 @@ class StackViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'apply':
           void this.handleApply(message.order);
+          break;
+        case 'initStack':
+          void this.handleInitStack(message.trunk, message.branches);
+          break;
+        case 'rebaseStack':
+          void this.handleRebaseStack();
           break;
         case 'publish':
           void this.handlePublish();
@@ -257,6 +264,124 @@ class StackViewProvider implements vscode.WebviewViewProvider {
 
   private ghPath(): string {
     return vscode.workspace.getConfiguration('restack').get<string>('ghPath', 'gh');
+  }
+
+  /**
+   * Create a stack from the branches the user dragged into order.
+   *
+   * No confirmation modal, unlike apply: the webview shows the exact command
+   * before the button is pressable, and init rewrites no commits — there is no
+   * history to lose and so nothing to snapshot. The preflight is the guard, and
+   * it runs here rather than in the webview because only the host can see the
+   * working tree.
+   */
+  private async handleInitStack(trunk: string, branches: string[]): Promise<void> {
+    const cwd = this.workspacePath();
+    if (!cwd) {
+      return;
+    }
+
+    if (this.runner.active) {
+      void vscode.window.showWarningMessage(
+        'Restack: an apply is in progress. Finish or dismiss it first.',
+      );
+      return;
+    }
+
+    await this.guard(async () => {
+      const blocked = await initPreflight(cwd, trunk, branches);
+      if (blocked) {
+        void vscode.window.showErrorMessage(`Restack: ${blocked}`);
+        return;
+      }
+
+      this.log.appendLine(`Creating a stack: gh ${initArgs(trunk, branches).join(' ')}`);
+      const failure = await runInit(cwd, this.ghPath(), trunk, branches);
+      if (failure) {
+        void vscode.window.showErrorMessage(`Restack: ${failure}`);
+        this.log.show(true);
+      }
+
+      // Refresh either way: a failed init can still have written part of the
+      // stack, and the view must show what is actually there.
+      await this.refresh();
+    });
+  }
+
+  /**
+   * Replay the stack onto itself to clear the drift gh-stack reports.
+   *
+   * `gh stack init` adopts branches into stack order without rebasing them, so
+   * a freshly created stack is correct on paper and unbuilt in fact. A forced
+   * plan is that rebase — and because it is an ordinary plan run through the
+   * ordinary runner, it arrives with the snapshot, undo, conflict pause, and
+   * reload persistence every other apply has.
+   *
+   * `gh stack rebase` would also do it, but it owns conflicts through its own
+   * `--continue` protocol, which the runner does not speak; a paused rebase
+   * would strand the user.
+   */
+  /** Palette entry point: the view may never have loaded a stack. */
+  async rebaseStack(): Promise<void> {
+    if (!this.lastStack) {
+      await this.refresh();
+    }
+    await this.handleRebaseStack();
+  }
+
+  private async handleRebaseStack(): Promise<void> {
+    const cwd = this.workspacePath();
+    const stack = this.lastStack;
+    if (!cwd || !stack) {
+      return;
+    }
+
+    if (this.runner.active) {
+      void vscode.window.showWarningMessage(
+        'Restack: an apply is in progress. Use the buttons in the plan panel.',
+      );
+      return;
+    }
+
+    const order = stack.branches.map((b) => b.name);
+    const plan = computePlan(stack, order, [], { force: true });
+    if (plan.isNoop) {
+      void vscode.window.showInformationMessage('Restack: the stack is already up to date.');
+      return;
+    }
+
+    const blocked = await preflight(cwd, stack, 'local', order);
+    if (blocked) {
+      void vscode.window.showErrorMessage(`Restack: ${blocked}`);
+      return;
+    }
+
+    const branches = plan.steps.filter((s) => s.kind === 'rebase').map((s) => s.branch ?? '');
+    const confirmed = await vscode.window.showWarningMessage(
+      `Rebase ${branches.length} branch${branches.length === 1 ? '' : 'es'} onto ${stack.trunk}?`,
+      {
+        modal: true,
+        detail:
+          `Replays ${branches.join(', ')} onto the branch below it, so each one ` +
+          `actually sits on its recorded parent.\n\nThis rewrites local history. ` +
+          `Restack snapshots every branch SHA first and can roll back.`,
+      },
+      'Rebase Stack',
+    );
+    if (confirmed !== 'Rebase Stack') {
+      return;
+    }
+
+    // The panel renders from the host's plan, so publish it before the run
+    // starts or the progress arrives with no steps to attach itself to.
+    this.lastPlan = plan;
+    this.lastOrder = order;
+    this.post({ type: 'plan', plan });
+
+    await this.guard(async () => {
+      await this.runner.start(cwd, this.ghPath(), stack, plan, order, 'local');
+      await this.refresh();
+    });
   }
 
   private async handleApply(order: string[]): Promise<void> {
@@ -449,20 +574,32 @@ class StackViewProvider implements vscode.WebviewViewProvider {
 
     this.post({ type: 'loading' });
     const cwd = folder.uri.fsPath;
-    const result: StackResult = await readStack(cwd, this.ghPath());
+    let result: StackResult = await readStack(cwd, this.ghPath());
     this.lastStack = result.kind === 'ok' ? result.stack : undefined;
     // The plan described the pre-refresh order; holding on to it would let a
     // later apply run stale commands.
     this.lastPlan = undefined;
     this.lastOrder = undefined;
 
-    const [candidates, canPublish] = await Promise.all([
-      this.lastStack ? readCandidates(cwd, this.lastStack) : Promise.resolve([]),
-      hasOrigin(cwd),
-    ]);
+    // With no stack to read, the view still needs branches to offer and a
+    // trunk to base them on — and the stacks already on disk, which are what
+    // separate "there is nothing here" from "you are just standing outside
+    // one". Branches already in some other stack are excluded: adopting one
+    // into a second stack is not something gh-stack models.
+    let candidates: CandidateBranch[] = [];
+    if (this.lastStack) {
+      candidates = await readCandidates(cwd, this.lastStack);
+    } else if (result.kind === 'no-stack') {
+      const [{ trunk, localBranches }, stacks] = await Promise.all([
+        detectTrunk(cwd),
+        readLocalStacks(cwd),
+      ]);
+      candidates = await readBranchCandidates(cwd, trunk, new Set(stacks.flatMap((s) => s.branches)));
+      result = { ...result, trunk, localBranches, stacks };
+    }
     this.lastCandidates = candidates;
 
-    this.post({ type: 'stack', result, candidates, canPublish });
+    this.post({ type: 'stack', result, candidates, canPublish: await hasOrigin(cwd) });
   }
 
   private html(webview: vscode.Webview): string {
@@ -534,6 +671,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerWebviewViewProvider('restack.stackView', provider),
     vscode.commands.registerCommand('restack.refresh', () => provider.refresh()),
     vscode.commands.registerCommand('restack.pushSubmit', () => provider.pushSubmit()),
+    vscode.commands.registerCommand('restack.rebaseStack', () => provider.rebaseStack()),
     vscode.commands.registerCommand('restack.showLog', () => log.show()),
   );
 

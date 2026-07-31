@@ -39,11 +39,35 @@ Restack computes the plan itself and shows it to you before anything runs.
 
 ## How it works
 
-1. Reads `gh stack view --json` in the workspace folder.
+1. Reads `gh stack view --json` in the workspace folder. No stack there yet?
+   See [Initializing a stack](#initializing-a-stack).
 2. Renders the stack top-down (trunk at the bottom), matching `gh stack view`.
 3. Dragging reorders a local copy only — nothing touches git.
 4. Recomputes the plan on every drop.
 5. **Apply** runs the plan, pausing on conflicts.
+
+### Initializing a stack
+
+On a repo with no stack, the panel is a builder rather than a dead end: pick a
+trunk, drag local branches in bottom-first, optionally type the name of a branch
+that does not exist yet, and **Initialize stack** runs the
+`gh stack init --base <trunk> …` shown right above the button.
+
+Two things about `gh stack init` are worth knowing, because both are visible
+afterwards:
+
+- **Adopting does not rebase.** Branches that already exist keep sitting wherever
+  they were; init only records the order. gh-stack then flags them `needsRebase`,
+  and Restack shows a banner naming them with a **Rebase stack** button. That
+  runs the same plan-then-apply path as a reorder — steps on screen first,
+  conflicts pause, undo available.
+- **It checks out the top branch, after writing `.git/gh-stack`.** A dirty tree
+  that blocks that checkout leaves a stack half-created, so Restack refuses to
+  run init at all until the tree is clean.
+
+If stacks exist but the current branch is not in one, the panel lists them with
+a **Check out** button instead — that is usually what you wanted, not a second
+stack.
 
 ### Adding and removing branches
 
@@ -162,9 +186,8 @@ these it will tell you what is missing rather than doing anything:
 - **[`gh`](https://cli.github.com/)**, authenticated (`gh auth login`).
 - **[gh-stack](https://github.com/github/gh-stack)**:
   `gh extension install github/gh-stack`.
-- **A repository with a stack already initialized** — `gh stack create` or
-  `gh stack init`. Restack reads and reorders an existing stack; it does not
-  create one. On a repo with no stack it says so and offers nothing else.
+- **A git repository.** A stack is not a prerequisite: on a repo without one
+  Restack offers to create it (see [Initializing a stack](#initializing-a-stack)).
 - **An `origin` remote**, for Push & Submit only. Everything local works
   without one, and the publish button is disabled rather than failing.
 - Built against **gh-stack v0.1.0**. That schema is pre-1.0 and will drift —
