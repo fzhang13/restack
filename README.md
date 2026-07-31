@@ -53,6 +53,8 @@ trunk, drag local branches in bottom-first, optionally type the name of a branch
 that does not exist yet, and **Initialize stack** runs the
 `gh stack init --base <trunk> …` shown right above the button.
 
+![Restack's create-a-stack view: two dragged branches, one typed, and the gh stack init command they produce](https://raw.githubusercontent.com/fzhang13/restack/main/media/screenshot-init.png)
+
 Two things about `gh stack init` are worth knowing, because both are visible
 afterwards:
 
@@ -202,9 +204,15 @@ npm install
 npm run build      # or: npm run watch
 npm test           # parser, plan, metadata + apply against real temp repos
 npm run typecheck
+npm run media      # regenerate the icon and both screenshots
 ```
 
 Press **F5** in VS Code to launch an Extension Development Host.
+
+Both screenshots are rendered from the real webview bundle through
+`test/harness/index.html`, driven by scripted gestures — a reorder for
+`screenshot.png`, drag-and-type for `screenshot-init.png`. They cannot drift
+from the UI, because they *are* the UI.
 
 ### Sandbox
 
