@@ -584,3 +584,144 @@ button:disabled {
   font-size: 12px;
   opacity: 0.6;
 }
+
+/* The warn block grew a button, so it is no longer always a bare paragraph. */
+.warn__text {
+  margin: 0 0 6px;
+}
+
+/*
+ * Creating a stack. The builder reuses the reorder view's columns, tray, and
+ * rows wholesale — only the surrounding chrome is new.
+ */
+.init {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.init__hint {
+  margin: 0;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+/* One column: there is no "current" order to compare a proposal against yet. */
+.columns--single {
+  grid-template-columns: 1fr;
+}
+
+/* An empty stack column is barely taller than its trunk row, which makes for a
+   razor-thin drop target. Pad it out until the first branch lands. */
+.columns--single .graph {
+  padding: 4px 0;
+  min-height: 46px;
+}
+
+/* The init column accepts drops on itself, so it needs the tray's affordance —
+   with an empty stack there are no rows to aim at. */
+.graph--over {
+  border-radius: 4px;
+  outline: 1px solid var(--vscode-focusBorder);
+  background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.08));
+}
+
+.init__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.init__row label {
+  opacity: 0.7;
+  /* Keeps the trunk and new-branch controls left-aligned with each other. */
+  min-width: 72px;
+}
+
+.init__row select,
+.init__row input {
+  font-family: inherit;
+  font-size: 11px;
+  padding: 2px 4px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 2px;
+}
+
+.init__row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.init__preview {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 2px;
+  background: var(--vscode-textBlockQuote-background, rgba(127, 127, 127, 0.1));
+}
+
+.init__preview code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--vscode-textPreformat-foreground);
+}
+
+.init__go {
+  align-self: flex-start;
+}
+
+.badge--new {
+  color: var(--vscode-gitDecoration-addedResourceForeground, #3fb950);
+}
+
+/* Stacks that exist locally but do not contain the current branch. */
+.stacks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stacks__hint {
+  margin: 0;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.stacks__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stacks__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 2px;
+  background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.08));
+}
+
+.stacks__path {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.stacks__arrow {
+  opacity: 0.45;
+}
+
+.stacks__trunk {
+  opacity: 0.6;
+}

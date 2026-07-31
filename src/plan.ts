@@ -26,12 +26,22 @@ export function shortSha(sha: string): string {
  * `proposedOrder` may also add branches (drawn from `candidates`) and drop ones
  * the stack currently holds. A dropped branch is rebased back onto trunk, which
  * detaches it from the stack without discarding its commits.
+ *
+ * `options.force` additionally replays branches gh-stack flags as drifted, even
+ * though their position is unchanged. That is what `gh stack init` leaves
+ * behind: adopting divergent branches records them in stack order without
+ * rebasing them onto each other, so `needsRebase` is set while the order this
+ * function diffs on is already correct. Anything above a drifted branch replays
+ * too, since its parent's tip is about to move. Same recorded-SHA anchors and
+ * same metadata write as a reorder — only the reason for replaying differs.
  */
 export function computePlan(
   stack: Stack,
   proposedOrder: string[],
   candidates: CandidateBranch[] = [],
+  options: { force?: boolean } = {},
 ): Plan {
+  const force = options.force === true;
   const currentOrder = stack.branches.map((b) => b.name);
   const byName = new Map(stack.branches.map((b) => [b.name, b]));
 
@@ -53,11 +63,17 @@ export function computePlan(
   const insertedBranches = proposedOrder.filter((n) => !byName.has(n));
   const removedBranches = currentOrder.filter((n) => !proposedSet.has(n));
 
-  const isNoop =
+  const orderUnchanged =
     insertedBranches.length === 0 &&
     removedBranches.length === 0 &&
     proposedOrder.length === currentOrder.length &&
     proposedOrder.every((name, i) => name === currentOrder[i]);
+
+  // A forced plan with nothing drifted has nothing to do, and must still report
+  // isNoop — that flag is what gates the Apply button and the host's own noop
+  // check, so claiming work exists would offer an apply that runs no rebases.
+  const hasDrift = proposedOrder.some((name) => byName.get(name)?.needsRebase);
+  const isNoop = orderUnchanged && !(force && hasDrift);
 
   if (isNoop) {
     return { steps: [], proposedOrder, isNoop, mergedBranches, insertedBranches, removedBranches };
@@ -102,8 +118,12 @@ export function computePlan(
     // A branch joining the stack always replays: it has never sat here.
     const isInserted = currentIndex < 0;
     const parentUnchanged = !isInserted && newBaseRef === previousBaseRef;
+    // Under `force`, a branch gh-stack flags as drifted replays even though its
+    // position is unchanged — and, via the running flag below, so does
+    // everything above it, because its tip is about to move.
+    const drifted = force && (byName.get(name)?.needsRebase ?? false);
 
-    if (parentUnchanged && !rewrittenBelow) {
+    if (parentUnchanged && !rewrittenBelow && !drifted) {
       return;
     }
     rewrittenBelow = true;
@@ -136,6 +156,19 @@ export function computePlan(
   }
 
   return { steps, proposedOrder, isNoop, mergedBranches, insertedBranches, removedBranches };
+}
+
+/**
+ * The argv for creating a stack: `gh stack init --base <trunk> a b c`, with
+ * branches bottom-to-top.
+ *
+ * Lives here, beside the other command builders, because it is Node-free and
+ * so the webview can call it too — the command previewed before the button is
+ * pressed is built by the same function that runs it, the same way PlanStep
+ * pairs `command` with `exec`.
+ */
+export function initArgs(trunk: string, branches: string[]): string[] {
+  return ['stack', 'init', '--base', trunk, ...branches];
 }
 
 /**

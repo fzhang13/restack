@@ -2,6 +2,7 @@ node_modules/
 dist/
 *.vsix
 .DS_Store
+.env
 
 # Scratch repos with their own .git, used for manual testing only.
 sandbox/

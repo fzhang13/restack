@@ -122,10 +122,37 @@ export interface Plan {
   removedBranches: string[];
 }
 
+/**
+ * A stack recorded in `.git/gh-stack`, read without going through gh-stack.
+ *
+ * `gh stack view` only reports the stack HEAD is currently on, so a repository
+ * with stacks the user is simply not standing in is indistinguishable from one
+ * with no stacks at all — both are exit 2, "not part of a stack". Reading the
+ * file directly is what tells the two apart, and the difference matters: the
+ * fix for one is to create a stack, for the other to check one out.
+ */
+export interface LocalStackSummary {
+  trunk: string;
+  /** Bottom-to-top, as recorded. */
+  branches: string[];
+}
+
 /** Discriminated result of reading the stack, so the UI can render each case. */
 export type StackResult =
   | { kind: 'ok'; stack: Stack }
-  | { kind: 'no-stack'; message: string }
+  | {
+      kind: 'no-stack';
+      message: string;
+      /**
+       * Best guess at the trunk a new stack should sit on, and the branches
+       * that could go in it. Absent when the host could not enumerate them —
+       * the view then offers what it can rather than nothing.
+       */
+      trunk?: string;
+      localBranches?: string[];
+      /** Stacks that exist locally but do not contain the current branch. */
+      stacks?: LocalStackSummary[];
+    }
   | { kind: 'not-a-repo'; message: string }
   | { kind: 'gh-missing'; message: string }
   | { kind: 'error'; message: string };
@@ -151,6 +178,16 @@ export type WebviewMessage =
   | { type: 'refresh' }
   | { type: 'reorder'; order: string[] }
   | { type: 'copyPlan'; text: string }
+  /**
+   * Create a stack from `branches`, bottom-to-top, based on `trunk`. Branches
+   * that do not exist yet are created by gh-stack.
+   */
+  | { type: 'initStack'; trunk: string; branches: string[] }
+  /**
+   * Replay the stack onto itself, resolving the drift gh-stack reports after
+   * an init adopts branches without rebasing them.
+   */
+  | { type: 'rebaseStack' }
   /** Run the local steps: rebases, then the gh-stack metadata write. */
   | { type: 'apply'; order: string[] }
   /** Run push + submit against an already-applied local reorder. */

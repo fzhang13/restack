@@ -45,7 +45,13 @@ interface ExecError extends Error {
  */
 let logSink: ((line: string) => void) | undefined;
 
-/** Run a child process, mapping every failure to a code. Never rejects. */
+/**
+ * Run a child process, mapping every failure to a code. Never rejects.
+ *
+ * Exported as `runCommand` for init.ts, so commands Restack runs outside an
+ * apply session still land in the same output channel. A second exec path
+ * would be a second thing to keep logging.
+ */
 async function run(
   file: string,
   args: string[],
@@ -209,6 +215,8 @@ async function revParse(cwd: string, ref: string): Promise<string | undefined> {
   const result = await run('git', ['rev-parse', '--verify', `${ref}^{commit}`], cwd);
   return result.code === 0 ? result.stdout.trim() : undefined;
 }
+
+export { run as runCommand, firstLine, gitCommonDir };
 
 /**
  * Whether there is anywhere to push. Checked before the confirmation modal so

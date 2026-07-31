@@ -584,3 +584,95 @@ test('aborting a publish-only session touches nothing', async (t) => {
   assert.equal(git(cwd, 'rev-parse', 'feat/ui'), uiBefore);
   assert.equal(runner.active, false);
 });
+
+/**
+ * The state `gh stack init` leaves behind when it adopts existing branches:
+ * they are recorded in stack order, each based on trunk, but never rebased
+ * onto each other. Verified against gh-stack v0.1.0, which reports the upper
+ * branches as `needsRebase` and otherwise leaves them alone.
+ */
+function makeAdoptedRepo(): string {
+  const cwd = mkdtempSync(join(tmpdir(), 'restack-adopt-'));
+  git(cwd, 'init', '-b', 'main');
+  git(cwd, 'config', 'user.email', 'test@example.com');
+  git(cwd, 'config', 'user.name', 'Restack Test');
+  git(cwd, 'config', 'commit.gpgsign', 'false');
+
+  commit(cwd, 'README.md', 'base\n', 'init');
+  const trunkHead = git(cwd, 'rev-parse', 'HEAD');
+
+  // Every branch off trunk, in parallel — none is on the one below it.
+  for (const name of ORDER) {
+    git(cwd, 'checkout', 'main');
+    git(cwd, 'checkout', '-b', name);
+    commit(cwd, `${name.replace(/\//g, '-')}.txt`, `${name}\n`, `feat: ${name}`);
+  }
+
+  writeFileSync(
+    join(cwd, '.git', 'gh-stack'),
+    JSON.stringify(
+      {
+        schemaVersion: 1,
+        repository: '',
+        stacks: [
+          {
+            trunk: { branch: 'main', head: trunkHead },
+            branches: ORDER.map((branch) => ({ branch, base: trunkHead })),
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+  );
+
+  git(cwd, 'checkout', ORDER.at(-1)!);
+  return cwd;
+}
+
+test('a forced plan builds the stack an init only recorded', async (t) => {
+  const cwd = makeAdoptedRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const stack = readStackFrom(cwd);
+  // gh-stack's own drift signal, which is what the UI offers the action on.
+  const drifted = { ...stack, branches: stack.branches.map((b) => ({ ...b, needsRebase: true })) };
+  const order = ORDER;
+  const plan = computePlan(drifted, order, [], { force: true });
+
+  assert.equal(plan.isNoop, false);
+  assert.equal(await preflight(cwd, drifted, 'local', order), undefined);
+
+  const { runner, states } = collect();
+  await runner.start(cwd, 'gh', drifted, plan, order, 'local');
+
+  const final = states.at(-1)!;
+  assert.equal(final.phase, 'done');
+  assert.equal(final.localComplete, true);
+
+  // The point of the exercise: each branch now actually contains the work of
+  // everything below it, which is what "stacked" means.
+  assert.deepEqual(commitsOn(cwd, 'feat/auth'), ['feat: feat/auth']);
+  assert.deepEqual(commitsOn(cwd, 'feat/api'), ['feat: feat/api', 'feat: feat/auth']);
+  assert.deepEqual(commitsOn(cwd, 'feat/ui'), [
+    'feat: feat/ui',
+    'feat: feat/api',
+    'feat: feat/auth',
+  ]);
+
+  // Each branch is an ancestor of the one above it — the invariant gh-stack's
+  // ⚠ marker was complaining about.
+  for (const [below, above] of [['feat/auth', 'feat/api'], ['feat/api', 'feat/ui']]) {
+    assert.doesNotThrow(
+      () => git(cwd, 'merge-base', '--is-ancestor', below, above),
+      `${below} should be an ancestor of ${above}`,
+    );
+  }
+
+  // And the recorded bases agree with where the refs actually are.
+  assert.deepEqual(metadataOrder(cwd), order);
+  const meta = JSON.parse(readFileSync(join(cwd, '.git', 'gh-stack'), 'utf8'));
+  assert.equal(meta.stacks[0].branches[0].base, git(cwd, 'rev-parse', 'main'));
+  assert.equal(meta.stacks[0].branches[1].base, git(cwd, 'rev-parse', 'feat/auth'));
+  assert.equal(meta.stacks[0].branches[2].base, git(cwd, 'rev-parse', 'feat/api'));
+});
