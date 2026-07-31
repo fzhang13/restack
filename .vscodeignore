@@ -14,8 +14,10 @@ fixtures/**
 sandbox/**
 sandbox-conflict/**
 
-# Source for media/icon.png, rasterized by hand; not needed at runtime.
+# Sources and build scripts for the marketplace art. media/icon.png and
+# media/screenshot.png ship; what generates them does not.
 media/marketplace-icon.svg
+media/build-*.mjs
 
 esbuild.mjs
 tsconfig.json

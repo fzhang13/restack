@@ -7,6 +7,30 @@ commands that reorder would require.
 Restack shows you the plan before anything runs, then runs it on your say-so.
 Nothing executes until you confirm, and the local half is reversible.
 
+> **Requires the [`gh` CLI](https://cli.github.com/) with
+> [gh-stack](https://github.com/github/gh-stack):**
+> `gh extension install github/gh-stack`.
+> Restack reads and writes gh-stack's state — it is a UI for it, not a
+> replacement. See [Requirements](#requirements).
+
+![Restack showing a stack, the branch tray, and the generated plan](https://raw.githubusercontent.com/fzhang13/restack/main/media/screenshot.png)
+
+## What stacking is, and what this does
+
+A **stack** is a chain of branches where each one is based on the one below it
+rather than on trunk, so a large change ships as a series of small, reviewable
+PRs. `feat/auth → feat/api → feat/ui`: each PR's diff shows only its own work,
+and each targets its parent instead of `main`.
+
+The cost is that the chain is fragile. Reordering it, inserting a branch, or
+pulling one out means rebasing every branch above the change — each onto a
+parent whose commits have just been rewritten. Do it by hand and one wrong
+upstream argument silently folds another branch's commits into yours, with no
+error and nothing to warn you.
+
+Restack does that arithmetic. Drag to reorder, and it shows the exact `git
+rebase --onto` sequence before running anything.
+
 ## Why
 
 `gh stack modify` can reorder a stack, but it is TUI-only — its only flags are
@@ -132,10 +156,21 @@ code --install-extension restack-0.1.0.vsix     # or: cursor --install-extension
 
 ## Requirements
 
-- [`gh`](https://cli.github.com/) with the stack extension:
-  `gh extension install github/gh-stack`
+Restack is a UI over the `gh stack` CLI, not a reimplementation of it. Without
+these it will tell you what is missing rather than doing anything:
+
+- **[`gh`](https://cli.github.com/)**, authenticated (`gh auth login`).
+- **[gh-stack](https://github.com/github/gh-stack)**:
+  `gh extension install github/gh-stack`.
+- **A repository with a stack already initialized** — `gh stack create` or
+  `gh stack init`. Restack reads and reorders an existing stack; it does not
+  create one. On a repo with no stack it says so and offers nothing else.
+- **An `origin` remote**, for Push & Submit only. Everything local works
+  without one, and the publish button is disabled rather than failing.
 - Built against **gh-stack v0.1.0**. That schema is pre-1.0 and will drift —
   the parser is deliberately tolerant, but check here after a gh-stack upgrade.
+
+Set `restack.ghPath` if `gh` is not on your `PATH`.
 
 ## Development
 
