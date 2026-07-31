@@ -2,7 +2,7 @@
   "name": "restack",
   "displayName": "Restack",
   "description": "Drag to reorder GitHub stacked PRs. Shows the exact git rebase plan before running it, and can undo. Requires the gh CLI with gh-stack.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publisher": "felixzhang",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -39,6 +39,12 @@
     "onStartupFinished"
   ],
   "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Restack runs git and the gh CLI against the open repository on startup, so it stays disabled until the workspace is trusted."
+    }
+  },
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -142,7 +148,8 @@
         "restack.ghPath": {
           "type": "string",
           "default": "gh",
-          "description": "Path to the gh CLI executable."
+          "scope": "machine",
+          "description": "Path to the gh CLI executable. User-settings only: a workspace cannot override it, since Restack executes this path on startup."
         }
       }
     }
