@@ -70,51 +70,120 @@ button:disabled {
   opacity: 0.6;
 }
 
+/*
+ * The git-graph rail. Geometry lives in these three variables so the node,
+ * its connecting segments, and the trunk stay locked together.
+ */
+.graph {
+  --rail-x: 11px; /* centre of the node column */
+  --node-size: 9px;
+  --row-gap: 8px;
+}
+
 .rows {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: var(--row-gap);
 }
 
 .row {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 7px;
-  border: 1px solid var(--vscode-widget-border, transparent);
-  border-radius: 3px;
-  background: var(--vscode-editorWidget-background, rgba(127, 127, 127, 0.08));
+  gap: 8px;
+  padding: 5px 7px 5px 4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
   font-size: 12px;
   white-space: nowrap;
-  overflow: hidden;
+  /* No overflow clip: the node's rail segments have to escape the row box to
+     bridge the gap to its neighbours. */
+}
+
+.node {
+  position: relative;
+  z-index: 1; /* over the rail, so the ring reads as an occlusion */
+  flex: 0 0 auto;
+  width: var(--node-size);
+  height: var(--node-size);
+  /* Left offset places the node's centre exactly on the rail: the 5px accounts
+     for the row's 1px border plus 4px padding. */
+  margin-left: calc(var(--rail-x) - var(--node-size) / 2 - 5px);
+  border-radius: 50%;
+  background: var(--node-color);
+  /* Ring in the panel background so the rail appears to pass behind the node. */
+  box-shadow: 0 0 0 2px var(--vscode-sideBar-background, var(--vscode-editor-background));
+}
+
+/*
+ * Each row owns the rail segment from its own top edge down to the next row's
+ * top edge (its height plus the gap). Stacked, the segments form one unbroken
+ * line — and because the segment belongs to the row, it travels with it during
+ * a drag rather than staying behind.
+ */
+.row::before {
+  content: '';
+  position: absolute;
+  /* Offsets resolve against the padding box, so discount the 1px border; the
+     further 0.5px centres the 1px line on the node rather than the rail axis. */
+  left: calc(var(--rail-x) - 1.5px);
+  top: 0;
+  bottom: calc(-1 * var(--row-gap));
+  width: 1px;
+  background: var(--vscode-widget-border, rgba(127, 127, 127, 0.45));
+}
+
+/* The tip of the stack: the rail starts at the node, not above it. */
+.rows > .row:first-child::before {
+  top: 50%;
+}
+
+/* The last branch hands the rail off to the trunk, which draws its own run
+   down to the trunk node. Stopping here avoids two translucent 1px lines
+   overlapping (the trunk block is dimmed) and reading as a darker segment. */
+.rows > .row:last-child::before {
+  bottom: 0;
 }
 
 .row--draggable {
   cursor: grab;
 }
 
+.row--draggable:hover {
+  background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.1));
+}
+
 .row--draggable:active {
   cursor: grabbing;
 }
 
-.row--current {
-  border-color: var(--vscode-focusBorder);
+/* Fade the lifted row's contents, but not its ::before rail segment — the line
+   has to stay solid while the row travels. */
+.row--dragging > * {
+  opacity: 0.35;
+}
+
+.row--current .name {
+  font-weight: 600;
+}
+
+.row--current .node {
+  box-shadow:
+    0 0 0 2px var(--vscode-sideBar-background, var(--vscode-editor-background)),
+    0 0 0 3.5px var(--node-color);
 }
 
 .row--merged {
-  opacity: 0.55;
+  opacity: 0.5;
 }
 
+/* A moved branch keeps its node colour — the tint marks the row that shifted. */
 .row--moved {
-  background: var(--vscode-diffEditor-insertedTextBackground, rgba(80, 160, 80, 0.18));
-}
-
-.grip {
-  opacity: 0.4;
-  font-size: 11px;
+  background: var(--vscode-diffEditor-insertedTextBackground, rgba(80, 160, 80, 0.16));
+  border-color: var(--vscode-diffEditor-insertedTextBorder, rgba(80, 160, 80, 0.35));
 }
 
 .name {
@@ -145,20 +214,47 @@ button:disabled {
   color: var(--vscode-editorWarning-foreground, #cca700);
 }
 
+/* The base of the graph: the rail runs down from the last branch into trunk. */
 .trunk {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 6px;
+  gap: 8px;
+  padding: 5px 7px 0 5px;
   font-size: 11px;
-  opacity: 0.6;
 }
 
-.trunk__line {
-  flex: 0 0 10px;
-  height: 1px;
-  background: currentColor;
+/* Dim only the label — an opacity on `.trunk` would fade its rail segment too
+   and leave a visible seam where it meets the last branch's. */
+.trunk__name {
+  font-family: var(--vscode-editor-font-family, monospace);
+  opacity: 0.7;
 }
+
+/* The trunk box begins exactly where `.rows` ends, so the rail picks up at 0
+   and runs down to the trunk node's centre. */
+.trunk::before {
+  content: '';
+  position: absolute;
+  left: calc(var(--rail-x) - 0.5px);
+  top: 0;
+  height: calc(50% + 2.5px);
+  width: 1px;
+  background: var(--vscode-widget-border, rgba(127, 127, 127, 0.45));
+}
+
+.trunk__node {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  /* Centre on the rail, then pad the right so the trunk label lines up with the
+     branch names above it despite this node being smaller. */
+  margin-left: calc(var(--rail-x) - 2.5px - 5px);
+  margin-right: 2px;
+  border-radius: 50%;
+  background: var(--vscode-widget-border, rgba(127, 127, 127, 0.7));
+}
+
 
 .plan {
   border-top: 1px solid var(--vscode-widget-border, rgba(127, 127, 127, 0.3));
@@ -240,6 +336,99 @@ button:disabled {
 
 .apply {
   align-self: flex-start;
+}
+
+.step--metadata code {
+  opacity: 0.75;
+  font-style: italic;
+}
+
+.step--done code,
+.step--running code,
+.step--failed code,
+.step--skipped code {
+  opacity: 1;
+}
+
+.step--pending,
+.step--skipped {
+  opacity: 0.45;
+}
+
+.step--running .step__mark {
+  color: var(--vscode-progressBar-background, var(--vscode-focusBorder));
+}
+
+.step--done .step__mark {
+  color: var(--vscode-testing-iconPassed, #3fb950);
+}
+
+.step--failed .step__mark {
+  color: var(--vscode-testing-iconFailed, #f85149);
+}
+
+.step__mark {
+  font-weight: 600;
+}
+
+.applying {
+  margin-top: 4px;
+  padding: 8px;
+  border-radius: 3px;
+  border-left: 2px solid var(--vscode-focusBorder);
+  background: var(--vscode-editorWidget-background, rgba(127, 127, 127, 0.08));
+}
+
+.applying--conflict {
+  border-left-color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.applying--failed {
+  border-left-color: var(--vscode-editorError-foreground, #f85149);
+}
+
+.applying--done {
+  border-left-color: var(--vscode-testing-iconPassed, #3fb950);
+}
+
+.applying__message {
+  margin: 0;
+  font-size: 12px;
+}
+
+.conflicts {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.conflicts code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.applying__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.applying__actions:empty {
+  display: none;
+}
+
+.publish {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+
+.publish:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
 }
 
 .message h2 {

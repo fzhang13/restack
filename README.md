@@ -4,8 +4,8 @@ Visualize [GitHub stacked pull requests](https://github.blog/changelog/2026-07-3
 in VS Code or Cursor, drag branches into a new order, and see exactly which git
 commands that reorder would require.
 
-**v0 is preview-only.** Restack reads your stack and computes a plan. It does
-not run git. You review the commands and run them yourself.
+Restack shows you the plan before anything runs, then runs it on your say-so.
+Nothing executes until you confirm, and the local half is reversible.
 
 ## Why
 
@@ -19,6 +19,43 @@ Restack computes the plan itself and shows it to you before anything runs.
 2. Renders the stack top-down (trunk at the bottom), matching `gh stack view`.
 3. Dragging reorders a local copy only — nothing touches git.
 4. Recomputes the plan on every drop.
+5. **Apply** runs the plan, pausing on conflicts.
+
+### Applying
+
+Apply is split in two, and the halves are not equally recoverable.
+
+The **local half** is the rebases plus the `.git/gh-stack` write. Before the
+first rebase, Restack records every branch SHA and the verbatim bytes of the
+metadata file; *Undo* restores both. It refuses to start over a dirty worktree,
+mid-rebase, or on a stack with merged branches.
+
+The **remote half** is the force-push and `gh stack submit`. It takes its own
+confirmation even if you chose "Apply & Publish" up front, and once it runs,
+Undo is withdrawn rather than offered and quietly useless. Without an `origin`
+remote that button is not offered at all — preflight refuses the *whole* apply
+on an impossible scope, so offering it would cost you the local reorder too.
+
+On a conflict the rebase pauses in place. Resolve the listed files, stage them,
+and hit *Continue*; or *Abort* to roll everything back.
+
+### Why Restack writes `.git/gh-stack`
+
+Rebasing moves branch refs but leaves gh-stack's own state file alone. Verified
+against v0.1.0: after reordering a stack by hand, `gh stack view` still printed
+the **old** order with a drift marker, and the recorded base SHAs were
+unchanged. Since `gh stack submit` retargets PR bases from that file, submitting
+on top of it would point PRs at the wrong parents.
+
+So Restack rewrites it — the reordered branch list, and each branch's new base
+resolved *after* the rebases. Writing another tool's pre-1.0 data is a real
+liability, so: the `schemaVersion` is checked and an unfamiliar one aborts,
+every unrecognized key is carried through untouched, and the original bytes are
+restored on abort. See `src/metadata.ts`.
+
+This is also why the plan shows a `#`-commented metadata step. If you copy the
+commands and run them yourself, you inherit the same problem — reorder that file
+too, or use `gh stack modify`.
 
 ### The recorded-SHA detail
 
@@ -49,7 +86,7 @@ executing the commands against a real repository; see `test/plan.test.ts`.
 ```bash
 npm install
 npm run build      # or: npm run watch
-npm test           # parser + plan unit tests
+npm test           # parser, plan, metadata + apply against real temp repos
 npm run typecheck
 ```
 
@@ -66,6 +103,17 @@ mkdir sandbox && cd sandbox && git init -b main
 gh stack init feat/auth feat/api feat/ui
 gh stack view --json > ../fixtures/stack-no-prs.json
 ```
+
+`sandbox-conflict/` (also gitignored) is a second throwaway stack whose three
+commits all rewrite the same line, so reordering any pair conflicts — that is
+the one to use when exercising the pause / continue / abort path. Applying
+mutates it, so rebuild it between runs rather than unpicking the last attempt:
+
+```bash
+./test/make-conflict-sandbox.sh
+```
+
+Both are wired up in `.vscode/launch.json`; pick a config from the Run panel.
 
 ### Browser harness
 
@@ -89,14 +137,20 @@ Working:
 - Distinct UI for: not on a stack, not a git repo, gh missing, parse failure
 - Reordering disabled when the stack has merged branches — gh-stack rejects
   inserting next to one
+- Executing the plan: rebases, the gh-stack metadata rewrite, force-push, submit
+- Conflict pause / continue / abort, with snapshot-based rollback
+- Dirty-worktree and mid-rebase refusal before anything runs
 
-Not built yet (v1):
+Not built yet:
 
-- Executing the plan
-- The conflict pause/continue/abort state machine, persisted to `workspaceState`
-  so it survives a window reload
-- Dirty-worktree detection and stash offer
-- Multi-root workspace support (v0 reads the first workspace folder only)
+- Apply state is held in the extension host, so it survives hiding the panel and
+  is replayed to a webview that reconnects mid-apply — but a *window* reload
+  discards it, stranding the repo mid-plan with no Undo. Persisting to
+  `workspaceState` is the fix.
+- No stash offer on a dirty worktree — Restack refuses and leaves it to you.
+- Multi-root workspace support (reads the first workspace folder only).
+- Push and submit are verified by unit tests and by hand, not end to end in CI —
+  that needs a throwaway GitHub repo.
 
 ## Upstream ask
 

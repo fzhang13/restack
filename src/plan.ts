@@ -19,7 +19,9 @@ export function shortSha(sha: string): string {
  * commit range — dropping or duplicating commits with no error. Recorded SHAs
  * make each step independent of the steps before it.
  *
- * v0 computes and displays only. Nothing here executes.
+ * Steps carry both a display string and an `exec` argv. Apply runs the argv, so
+ * what the panel shows is always what runs — no shell parsing in between, and
+ * no chance of the two drifting apart.
  */
 export function computePlan(stack: Stack, proposedOrder: string[]): Plan {
   const currentOrder = stack.branches.map((b) => b.name);
@@ -60,10 +62,12 @@ export function computePlan(stack: Stack, proposedOrder: string[]): Plan {
       return;
     }
 
+    const args = ['rebase', '--onto', newBaseRef, oldBase, name];
     steps.push({
       kind: 'rebase',
       branch: name,
-      command: `git rebase --onto ${newBaseRef} ${oldBase} ${name}`,
+      command: `git ${args.join(' ')}`,
+      exec: { file: 'git', args },
       note: oldBase
         ? `Replay ${name} onto ${newBaseRef}, taking commits after ${shortSha(oldBase)}.`
         : `Replay ${name} onto ${newBaseRef}.`,
@@ -72,15 +76,33 @@ export function computePlan(stack: Stack, proposedOrder: string[]): Plan {
 
   if (steps.length > 0) {
     const touched = steps.filter((s) => s.kind === 'rebase').map((s) => s.branch!);
+
+    // Rendered as a shell comment so the plan stays pasteable, but it is a real
+    // step: rebasing alone leaves .git/gh-stack describing the old order, and
+    // `gh stack submit` would then retarget PR bases from stale data. Anyone
+    // running these commands by hand has to reorder that file too, or use
+    // `gh stack modify`. See metadata.ts.
+    steps.push({
+      kind: 'metadata',
+      command: '# Restack rewrites .git/gh-stack: branch order + recorded base SHAs',
+      note: 'Rebasing does not update gh-stack’s own state file. Without this, `gh stack view` reports the old order and submit retargets the wrong bases.',
+    });
+
+    const pushArgs = ['push', '--force-with-lease', 'origin', ...touched];
     steps.push({
       kind: 'push',
-      command: `git push --force-with-lease origin ${touched.join(' ')}`,
+      command: `git ${pushArgs.join(' ')}`,
+      exec: { file: 'git', args: pushArgs },
       note: 'force-with-lease refuses to clobber commits you have not seen.',
     });
+
+    // --auto skips the interactive editor, which cannot run from a webview.
+    const submitArgs = ['stack', 'submit', '--auto'];
     steps.push({
       kind: 'submit',
-      command: 'gh stack submit',
-      note: 'Retargets each PR base and updates the stack on GitHub.',
+      command: `gh ${submitArgs.join(' ')}`,
+      exec: { file: 'gh', args: submitArgs },
+      note: 'Retargets each PR base and updates the stack on GitHub. --auto skips the interactive editor.',
     });
   }
 
