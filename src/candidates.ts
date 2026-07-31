@@ -1,11 +1,11 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { CandidateBranch, Stack } from './model.ts';
+import type { CandidateBranch } from './model.ts';
 
 const execFileAsync = promisify(execFile);
 
 /**
- * Local branches that are not in the stack but could be dropped into it.
+ * Local branches that could be dropped into a stack.
  *
  * gh-stack knows nothing about these, so there is no recorded base SHA to
  * anchor a rebase to. We compute one ourselves — `git merge-base <branch>
@@ -14,21 +14,15 @@ const execFileAsync = promisify(execFile);
  * plan.ts then treats it exactly like any other recorded base, so the
  * recorded-SHA invariant extends to inserted branches unchanged.
  *
+ * `exclude` is every branch already claimed by *some* stack in the repository,
+ * not just the one being rendered. A repository can hold several — gh-stack
+ * models that, and Restack now shows it — and offering another stack's branch
+ * in the tray would let it be dropped into two at once, which is the ambiguity
+ * gh-stack refuses with `branch %q belongs to multiple stacks`. Callers build
+ * that set from readStackSummaries.
+ *
  * Never rejects: a repository we cannot enumerate yields an empty tray rather
  * than breaking the whole view.
- */
-export async function readCandidates(cwd: string, stack: Stack): Promise<CandidateBranch[]> {
-  return readBranchCandidates(cwd, stack.trunk, new Set(stack.branches.map((b) => b.name)));
-}
-
-/**
- * The same enumeration without a Stack to read it from.
- *
- * Needed by the init flow, which lists branches in a repository that has no
- * stack at all — so there is nothing to pass `readCandidates`. The filters
- * carry over unchanged and are, if anything, more important there: `gh stack
- * init` will happily adopt a branch sharing no history with trunk, producing a
- * stack whose branches cannot be rebased onto each other.
  */
 export async function readBranchCandidates(
   cwd: string,

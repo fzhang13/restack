@@ -68,8 +68,10 @@ afterwards:
   run init at all until the tree is clean.
 
 If stacks exist but the current branch is not in one, the panel lists them with
-a **Check out** button instead — that is usually what you wanted, not a second
-stack.
+a **Check out** button above the builder — that is usually what you wanted, not
+a second stack. Once you are in one, the same list is a step away in the
+switcher: see [Several stacks in one
+repository](#several-stacks-in-one-repository).
 
 ### Working against another branch
 
@@ -193,9 +195,45 @@ kept — local tracking included — even though the command exits successfully.
 Restack re-reads the stack afterwards rather than trusting the exit code, and
 says plainly when the stack is still there.
 
-To remove a *different* stack, check it out first: `gh stack unstack` with no
-argument targets the active one, and the empty-state view already lists the
-repo's other stacks with a **Check out** button.
+To remove a *different* stack, switch to it first: `gh stack unstack` with no
+argument targets the active one. See [Several stacks in one
+repository](#several-stacks-in-one-repository).
+
+### Several stacks in one repository
+
+A repository can hold as many stacks as you like. gh-stack models this outright
+— `.git/gh-stack` is an array, and `gh stack checkout` takes a stack *number* —
+but only one is **active** at a time, and which one is decided by where HEAD is.
+`gh stack view` reports the stack the current branch belongs to and nothing
+else.
+
+![Restack's stack switcher: three stacks in one repository, with PR badges and the active one marked](https://raw.githubusercontent.com/fzhang13/restack/main/media/screenshot-switcher.png)
+
+The switcher above the toolbar is where they all live. It stays collapsed to a
+single line (`Stack 2 of 3 · on main`) and disappears entirely when there is
+only one stack, so a one-stack repository is unchanged. Expanded, each row is a
+stack: its number, its branches top-down with the trunk last, a PR badge per
+branch, and `↓N` when the remote has commits that would block a rewrite.
+
+Switching is a **checkout**, not a display mode. Restack checks out that stack's
+*top* branch — the one branch guaranteed to belong to it and no other, since a
+stack's trunk is routinely another stack's branch — and `gh stack view` then
+reports it in full. That means one render path rather than two, and everything
+below the switcher behaves identically whichever stack you are in. It refuses
+for the same reasons every other checkout does: a dirty worktree, an apply in
+flight, or a rebase already in progress.
+
+**+ New stack** creates another one. `gh stack init` refuses while HEAD is part
+of a stack, so Restack asks first and then checks out the trunk — the existing
+stack is untouched, and the builder appears with the trunk's other branches
+available. Branches already claimed by *any* stack are kept out of the tray,
+because a branch in two stacks is the ambiguity gh-stack refuses outright.
+
+`Restack: Switch Stack` and `Restack: New Stack` do the same from the command
+palette.
+
+Standing on a trunk shared by several stacks is its own position: gh-stack has
+no single stack to report, so Restack shows the switcher rather than an error.
 
 ### Applying
 
@@ -389,16 +427,18 @@ npm install
 npm run build      # or: npm run watch
 npm test           # parser, plan, metadata + apply against real temp repos
 npm run typecheck
-npm run media      # regenerate the icon and all three screenshots
+npm run media      # regenerate the icon and every screenshot
 ```
 
 Press **F5** in VS Code to launch an Extension Development Host.
 
-All three screenshots are rendered from the real webview bundle through
+Every screenshot is rendered from the real webview bundle through
 `test/harness/index.html` — a scripted reorder for `screenshot.png`,
-drag-and-type for `screenshot-init.png`, and the harness's `?view=behind` scene
-for `screenshot-remote.png`, which needs no gesture because the state is the
-subject. They cannot drift from the UI, because they *are* the UI.
+drag-and-type for `screenshot-init.png`, the harness's `?view=behind` scene for
+`screenshot-remote.png`, which needs no gesture because the state is the
+subject, and `?view=multi` with the disclosure clicked open for
+`screenshot-switcher.png`. They cannot drift from the UI, because they *are* the
+UI.
 
 ### Sandbox
 
@@ -421,7 +461,17 @@ mutates it, so rebuild it between runs rather than unpicking the last attempt:
 ./test/make-conflict-sandbox.sh
 ```
 
-Both are wired up in `.vscode/launch.json`; pick a config from the Run panel.
+`sandbox-multi/` (gitignored too) holds two independent stacks off `main`, plus
+a branch in neither — the state the switcher exists for, and the one to use when
+checking that an apply in one stack leaves the other's `.git/gh-stack` entry
+alone:
+
+```bash
+./test/make-multi-stack-sandbox.sh
+```
+
+The first two are wired up in `.vscode/launch.json`; pick a config from the Run
+panel.
 
 ### Browser harness
 
@@ -436,7 +486,7 @@ open test/harness/index.html
 ```
 
 `?view=` reaches the states a single fixture cannot be in at once — `init`,
-`outside`, `drift`, `trunk`, `away`, and `conflict`. The conflict view is
+`outside`, `drift`, `trunk`, `away`, `multi`, and `conflict`. The conflict view is
 interactive rather than a still: clicking **Resolve** marks the file staged and
 re-emits after a beat, standing in for the merge editor and the index watcher, so
 the gating on *Continue* can be exercised with no repository behind it.
@@ -497,6 +547,9 @@ Working:
   VS Code's three-way merge editor and tracked live off `.git/index`
 - A HEAD indicator showing where you are in the stack, and checkout from a row
   button, the status bar, or the command palette
+- Many stacks per repository: a switcher listing every one with PR badges,
+  switching between them, and a **+ New stack** button that parks on the trunk
+  first because `gh stack init` refuses from inside a stack
 - Basing a stack on any branch, local or remote-only — a colleague's work rather
   than the default branch — and moving an existing stack onto a different base
 - Remote state read from local refs: ahead/behind pills per row, a Fetch button

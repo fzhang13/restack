@@ -2,7 +2,7 @@
   "name": "restack",
   "displayName": "Restack",
   "description": "Drag to reorder GitHub stacked PRs. Shows the exact git rebase plan before running it, and can undo. Requires the gh CLI with gh-stack.",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "publisher": "felixzhang",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -102,6 +102,15 @@
         "icon": "$(git-branch)"
       },
       {
+        "command": "restack.switchStack",
+        "title": "Restack: Switch Stack",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "restack.newStack",
+        "title": "Restack: New Stack"
+      },
+      {
         "command": "restack.showLog",
         "title": "Restack: Show Log"
       }
@@ -137,6 +146,14 @@
           "group": "navigation@0"
         },
         {
+          "command": "restack.switchStack",
+          "when": "view == restack.stackView"
+        },
+        {
+          "command": "restack.newStack",
+          "when": "view == restack.stackView"
+        },
+        {
           "command": "restack.showLog",
           "when": "view == restack.stackView"
         }
@@ -159,7 +176,7 @@
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types test/*.test.ts",
-    "media": "node media/build-icon.mjs && npm run build && node test/harness/build-driver.mjs && node media/build-screenshot.mjs && node media/build-init-screenshot.mjs && node media/build-remote-screenshot.mjs",
+    "media": "node media/build-icon.mjs && npm run build && node test/harness/build-driver.mjs && node media/build-screenshot.mjs && node media/build-init-screenshot.mjs && node media/build-remote-screenshot.mjs && node media/build-switcher-screenshot.mjs",
     "package": "vsce package",
     "publish:vsce": "vsce publish",
     "publish:ovsx": "ovsx publish",
