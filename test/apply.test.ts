@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ApplyRunner, hasOrigin, preflight } from '../src/apply.ts';
 import { computePlan } from '../src/plan.ts';
-import type { ApplyProgress, Stack } from '../src/model.ts';
+import type { ApplyProgress, CandidateBranch, Stack } from '../src/model.ts';
+import type { PersistedSession } from '../src/apply.ts';
 
 /**
  * These run against real repositories on disk. The whole point of apply.ts is
@@ -340,4 +341,246 @@ test('an unchanged order produces no steps to run', () => {
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
+});
+
+/** Branch off trunk with one commit, as a tray candidate would be. */
+function addLooseBranch(cwd: string, name: string, file: string): CandidateBranch {
+  const head = git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD');
+  git(cwd, 'checkout', 'main');
+  git(cwd, 'checkout', '-b', name);
+  commit(cwd, file, `${name}\n`, `feat: add ${name}`);
+  git(cwd, 'checkout', head);
+  return {
+    name,
+    base: git(cwd, 'merge-base', name, 'main'),
+    commitCount: 1,
+  };
+}
+
+test('inserting a branch mid-stack rewrites refs and metadata together', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const spike = addLooseBranch(cwd, 'spike', 'spike.txt');
+  const stack = readStackFrom(cwd);
+  const next = ['feat/auth', 'spike', 'feat/api', 'feat/ui'];
+  const plan = computePlan(stack, next, [spike]);
+
+  assert.equal(await preflight(cwd, stack, 'local', next), undefined);
+
+  const { runner, states } = collect();
+  await runner.start(cwd, 'gh', stack, plan, next, 'local');
+
+  assert.equal(states.at(-1)!.phase, 'done');
+
+  // One commit per branch, cumulative bottom-to-top. The failure this guards
+  // against is a branch absorbing the commit below it — the same absorption
+  // bug recorded SHAs exist to prevent, now across an inserted branch.
+  assert.deepEqual(commitsOn(cwd, 'feat/auth'), ['feat: add auth layer']);
+  assert.deepEqual(commitsOn(cwd, 'spike'), ['feat: add spike', 'feat: add auth layer']);
+  assert.deepEqual(commitsOn(cwd, 'feat/api'), [
+    'feat: add api routes',
+    'feat: add spike',
+    'feat: add auth layer',
+  ]);
+  assert.deepEqual(commitsOn(cwd, 'feat/ui'), [
+    'feat: add ui components',
+    'feat: add api routes',
+    'feat: add spike',
+    'feat: add auth layer',
+  ]);
+
+  // The metadata write had to find the stack by its OLD three-name set while
+  // writing four; that is what MetadataUpdate.match exists for.
+  assert.deepEqual(metadataOrder(cwd), next);
+  const meta = JSON.parse(readFileSync(join(cwd, '.git', 'gh-stack'), 'utf8'));
+  assert.equal(meta.stacks[0].branches[1].base, git(cwd, 'rev-parse', 'feat/auth'));
+  assert.equal(meta.stacks[0].branches[2].base, git(cwd, 'rev-parse', 'spike'));
+});
+
+test('removing a branch replays it onto trunk and keeps its commits', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const stack = readStackFrom(cwd);
+  const next = ['feat/auth', 'feat/ui'];
+  const plan = computePlan(stack, next);
+  assert.deepEqual(plan.removedBranches, ['feat/api']);
+
+  const { runner, states } = collect();
+  await runner.start(cwd, 'gh', stack, plan, next, 'local');
+  assert.equal(states.at(-1)!.phase, 'done');
+
+  // Un-stacked, not deleted: it sits directly on trunk with its own commit.
+  assert.deepEqual(commitsOn(cwd, 'feat/api'), ['feat: add api routes']);
+  assert.equal(git(cwd, 'rev-parse', 'feat/api^'), git(cwd, 'rev-parse', 'main'));
+
+  // The survivors close the gap — ui no longer carries api's commit.
+  assert.deepEqual(commitsOn(cwd, 'feat/ui'), [
+    'feat: add ui components',
+    'feat: add auth layer',
+  ]);
+
+  assert.deepEqual(metadataOrder(cwd), next);
+});
+
+test('undo after an insert restores the inserted branch too', async (t) => {
+  const cwd = makeRepo({ sharedFile: true });
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  // Shares the conflicting file, so the apply pauses partway and undo has real
+  // work to do.
+  const spike = addLooseBranch(cwd, 'spike', 'shared.txt');
+
+  const before = {
+    auth: git(cwd, 'rev-parse', 'feat/auth'),
+    api: git(cwd, 'rev-parse', 'feat/api'),
+    ui: git(cwd, 'rev-parse', 'feat/ui'),
+    spike: git(cwd, 'rev-parse', 'spike'),
+    metadata: readFileSync(join(cwd, '.git', 'gh-stack'), 'utf8'),
+    head: git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD'),
+  };
+
+  const stack = readStackFrom(cwd);
+  const next = ['spike', 'feat/auth', 'feat/api', 'feat/ui'];
+  const { runner } = collect();
+  await runner.start(cwd, 'gh', stack, computePlan(stack, next, [spike]), next, 'local');
+
+  await runner.abort();
+
+  // spike is absent from stack.branches, so only the union snapshot could have
+  // brought it back. Without it, undo would silently leave it rewritten.
+  assert.equal(git(cwd, 'rev-parse', 'spike'), before.spike);
+  assert.equal(git(cwd, 'rev-parse', 'feat/auth'), before.auth);
+  assert.equal(git(cwd, 'rev-parse', 'feat/api'), before.api);
+  assert.equal(git(cwd, 'rev-parse', 'feat/ui'), before.ui);
+  assert.equal(readFileSync(join(cwd, '.git', 'gh-stack'), 'utf8'), before.metadata);
+  assert.equal(git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD'), before.head);
+  assert.equal(git(cwd, 'status', '--porcelain'), '');
+});
+
+test('preflight refuses a branch that does not exist or is unrelated', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const stack = readStackFrom(cwd);
+
+  // A missing ref would otherwise fail mid-cascade, after earlier branches
+  // had already been rewritten.
+  assert.match(
+    (await preflight(cwd, stack, 'local', [...ORDER, 'ghost'])) ?? '',
+    /ghost does not exist locally/,
+  );
+
+  // An orphan shares no history with trunk, so there is nothing to replay.
+  git(cwd, 'checkout', '--orphan', 'orphan');
+  git(cwd, 'rm', '-rf', '--cached', '.');
+  commit(cwd, 'orphan.txt', 'orphan\n', 'orphan root');
+  // `rm --cached` left the stack's files untracked, which would block the way
+  // back out of the orphan branch.
+  git(cwd, 'clean', '-fd');
+  git(cwd, 'checkout', 'feat/ui');
+  assert.match(
+    (await preflight(cwd, stack, 'local', [...ORDER, 'orphan'])) ?? '',
+    /shares no history/,
+  );
+});
+
+// A window reload throws away the extension host. Without persistence the
+// repository is left mid-plan with the snapshot — and so Undo — gone.
+test('a session is persisted and can be restored after a reload', async (t) => {
+  const cwd = makeRepo({ sharedFile: true });
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const before = {
+    auth: git(cwd, 'rev-parse', 'feat/auth'),
+    api: git(cwd, 'rev-parse', 'feat/api'),
+    ui: git(cwd, 'rev-parse', 'feat/ui'),
+    metadata: readFileSync(join(cwd, '.git', 'gh-stack'), 'utf8'),
+  };
+
+  const stack = readStackFrom(cwd);
+  const next = ['feat/ui', 'feat/auth', 'feat/api'];
+
+  let saved: PersistedSession | undefined;
+  const first = new ApplyRunner(() => {}, { persist: (s) => { saved = s; } });
+  await first.start(cwd, 'gh', stack, computePlan(stack, next), next, 'local');
+  assert.equal(first.current?.phase, 'conflict');
+
+  // Survives a JSON round trip, as workspaceState would impose.
+  const wire = JSON.parse(JSON.stringify(saved)) as PersistedSession;
+  assert.equal(wire.cwd, cwd);
+  assert.equal(wire.refs.length, 3);
+
+  // The host is gone; a fresh one adopts the session.
+  const states: ApplyProgress[] = [];
+  const second = new ApplyRunner((p) => states.push(p));
+  second.restore(wire);
+
+  assert.equal(second.active, true);
+  assert.equal(second.current?.phase, 'conflict');
+  assert.deepEqual(second.currentPlan?.proposedOrder, next);
+
+  // And Undo still reaches the pre-apply state through the restored snapshot.
+  await second.abort();
+  assert.equal(git(cwd, 'rev-parse', 'feat/auth'), before.auth);
+  assert.equal(git(cwd, 'rev-parse', 'feat/api'), before.api);
+  assert.equal(git(cwd, 'rev-parse', 'feat/ui'), before.ui);
+  assert.equal(readFileSync(join(cwd, '.git', 'gh-stack'), 'utf8'), before.metadata);
+});
+
+test('persistence is cleared when the session ends', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const stack = readStackFrom(cwd);
+  const next = ['feat/api', 'feat/ui', 'feat/auth'];
+
+  let saved: PersistedSession | undefined;
+  const runner = new ApplyRunner(() => {}, { persist: (s) => { saved = s; } });
+  await runner.start(cwd, 'gh', stack, computePlan(stack, next), next, 'local');
+  assert.ok(saved, 'a finished-but-undoable session stays persisted');
+
+  runner.dismiss();
+  // Otherwise the next window would restore a session that is already over and
+  // reject every later apply as "already in progress".
+  assert.equal(saved, undefined);
+});
+
+test('publishOnly runs push and submit with no reorder and no undo', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const { runner, states } = collect();
+  // `gh` is not resolvable here, so the push step fails — which is the point:
+  // it proves the two steps ran standalone, with no plan behind them.
+  await runner.publishOnly(cwd, 'gh-does-not-exist', readStackFrom(cwd));
+
+  const final = states.at(-1)!;
+  assert.deepEqual(runner.currentPlan?.steps.map((s) => s.command) ?? [], [
+    'gh stack push',
+    'gh stack submit --auto',
+  ]);
+  assert.equal(final.phase, 'failed');
+  // Nothing local was rewritten, so there is nothing to roll back.
+  assert.equal(final.canUndo, false);
+  assert.equal(final.localComplete, true);
+});
+
+test('aborting a publish-only session touches nothing', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const before = readFileSync(join(cwd, '.git', 'gh-stack'), 'utf8');
+  const uiBefore = git(cwd, 'rev-parse', 'feat/ui');
+  const { runner, states } = collect();
+  await runner.publishOnly(cwd, 'gh-does-not-exist', readStackFrom(cwd));
+
+  // Its snapshot is empty and its metadataPath is '', so a naive rollback
+  // would try to write to the repository root.
+  await runner.abort();
+
+  assert.match(states.at(-1)!.message ?? '', /Nothing to roll back/);
+  assert.equal(readFileSync(join(cwd, '.git', 'gh-stack'), 'utf8'), before);
+  assert.equal(git(cwd, 'rev-parse', 'feat/ui'), uiBefore);
+  assert.equal(runner.active, false);
 });

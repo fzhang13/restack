@@ -4,6 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 import { basesForOrder, rewriteMetadata } from './metadata.ts';
+import { publishSteps } from './plan.ts';
 import type { ApplyProgress, ApplyScope, Plan, PlanStep, Stack } from './model.ts';
 
 const execFileAsync = promisify(execFile);
@@ -37,12 +38,42 @@ interface ExecError extends Error {
   stderr?: string;
 }
 
+/**
+ * Sink for the full command log. Set by ApplyRunner so the module-level `run`
+ * can report every child process without every call site threading a logger
+ * through. The UI only ever shows the first stderr line; the rest lands here.
+ */
+let logSink: ((line: string) => void) | undefined;
+
 /** Run a child process, mapping every failure to a code. Never rejects. */
 async function run(
   file: string,
   args: string[],
   cwd: string,
   timeout = LOCAL_TIMEOUT_MS,
+): Promise<RunResult> {
+  const started = Date.now();
+  const result = await execute(file, args, cwd, timeout);
+
+  if (logSink) {
+    const ms = Date.now() - started;
+    logSink(`$ ${file} ${args.join(' ')}  (exit ${result.code}, ${ms}ms)`);
+    for (const stream of [result.stdout, result.stderr]) {
+      const text = stream.trim();
+      if (text) {
+        logSink(text.split('\n').map((l) => `    ${l}`).join('\n'));
+      }
+    }
+  }
+
+  return result;
+}
+
+async function execute(
+  file: string,
+  args: string[],
+  cwd: string,
+  timeout: number,
 ): Promise<RunResult> {
   try {
     const { stdout, stderr } = await execFileAsync(file, args, {
@@ -106,6 +137,49 @@ interface Session {
   lastProgress?: ApplyProgress;
 }
 
+/**
+ * A session flattened for `workspaceState`, so a *window* reload no longer
+ * strands the repository mid-plan with no route to Undo. Everything here is
+ * plain JSON; the only lossy field is `snapshot.refs`, a Map written as pairs.
+ */
+export interface PersistedSession {
+  cwd: string;
+  ghPath: string;
+  stack: Stack;
+  plan: Plan;
+  order: string[];
+  refs: Array<[string, string]>;
+  branch?: string;
+  metadata: string;
+  metadataPath: string;
+  cursor: number;
+  statuses: ApplyProgress['statuses'];
+  scope: ApplyScope;
+  localComplete: boolean;
+  canUndo: boolean;
+  lastProgress?: ApplyProgress;
+}
+
+function serialize(session: Session): PersistedSession {
+  return {
+    cwd: session.cwd,
+    ghPath: session.ghPath,
+    stack: session.stack,
+    plan: session.plan,
+    order: session.order,
+    refs: [...session.snapshot.refs],
+    branch: session.snapshot.branch,
+    metadata: session.snapshot.metadata,
+    metadataPath: session.snapshot.metadataPath,
+    cursor: session.cursor,
+    statuses: session.statuses,
+    scope: session.scope,
+    localComplete: session.localComplete,
+    canUndo: session.canUndo,
+    lastProgress: session.lastProgress,
+  };
+}
+
 export class ApplyError extends Error {}
 
 /** Resolve `.git`, honouring worktrees and `.git`-as-a-file. */
@@ -152,7 +226,12 @@ export async function hasOrigin(cwd: string): Promise<boolean> {
  * recoverable. A rebase over a dirty tree is the fastest way to lose work that
  * was never committed, and no snapshot can bring that back.
  */
-export async function preflight(cwd: string, stack: Stack, scope: ApplyScope): Promise<string | undefined> {
+export async function preflight(
+  cwd: string,
+  stack: Stack,
+  scope: ApplyScope,
+  order: string[] = stack.branches.map((b) => b.name),
+): Promise<string | undefined> {
   const repo = await run('git', ['rev-parse', '--is-inside-work-tree'], cwd);
   if (repo.code !== 0) {
     return 'Not a git repository.';
@@ -170,6 +249,19 @@ export async function preflight(cwd: string, stack: Stack, scope: ApplyScope): P
   const merged = stack.branches.filter((b) => b.isMerged).map((b) => b.name);
   if (merged.length > 0) {
     return `Stack contains merged branches (${merged.join(', ')}). gh-stack rejects reordering around them.`;
+  }
+
+  // Branches joining the stack are not in `stack.branches`, so nothing has
+  // checked they exist or share history with trunk. A missing ref would fail
+  // mid-cascade, after earlier branches had already been rewritten.
+  for (const name of order) {
+    if (!(await revParse(cwd, name))) {
+      return `Branch ${name} does not exist locally.`;
+    }
+    const shared = await run('git', ['merge-base', name, stack.trunk], cwd);
+    if (shared.code !== 0) {
+      return `Branch ${name} shares no history with ${stack.trunk}, so it cannot be rebased onto the stack.`;
+    }
   }
 
   const gitDir = await gitCommonDir(cwd);
@@ -191,6 +283,17 @@ export async function preflight(cwd: string, stack: Stack, scope: ApplyScope): P
  * mid-plan for as long as the user needs to resolve it — possibly across
  * panel hides and reopens, which throw away webview state.
  */
+export interface RunnerOptions {
+  /**
+   * Persist the session so it survives a window reload, or `undefined` once it
+   * ends. Kept as a callback because this module must stay free of `vscode` —
+   * test/apply.test.ts imports it directly under `node --test`.
+   */
+  persist?: (state: PersistedSession | undefined) => void;
+  /** Full command log: file, argv, exit code, and both output streams. */
+  log?: (line: string) => void;
+}
+
 export class ApplyRunner {
   private session?: Session;
   /**
@@ -199,9 +302,14 @@ export class ApplyRunner {
    * strip-only mode cannot desugar those.
    */
   private readonly emit: (progress: ApplyProgress) => void;
+  private readonly options: RunnerOptions;
 
-  constructor(emit: (progress: ApplyProgress) => void) {
+  constructor(emit: (progress: ApplyProgress) => void, options: RunnerOptions = {}) {
     this.emit = emit;
+    this.options = options;
+    if (options.log) {
+      logSink = options.log;
+    }
   }
 
   get active(): boolean {
@@ -236,13 +344,16 @@ export class ApplyRunner {
     const gitDir = await gitCommonDir(cwd);
     const metadataPath = join(gitDir, 'gh-stack');
 
+    // Snapshot the union of what is in the stack and what is being applied.
+    // A branch joining the stack is absent from `stack.branches` but is about
+    // to be rewritten, so without it here Undo could not put it back.
     const refs = new Map<string, string>();
-    for (const branch of stack.branches) {
-      const sha = await revParse(cwd, branch.name);
+    for (const name of new Set([...stack.branches.map((b) => b.name), ...order])) {
+      const sha = await revParse(cwd, name);
       if (!sha) {
-        throw new ApplyError(`Branch ${branch.name} does not exist locally.`);
+        throw new ApplyError(`Branch ${name} does not exist locally.`);
       }
-      refs.set(branch.name, sha);
+      refs.set(name, sha);
     }
 
     const head = await run('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd);
@@ -303,10 +414,89 @@ export class ApplyRunner {
     await this.drive();
   }
 
+  /**
+   * Push and submit with no reorder in front of them.
+   *
+   * Opens a session over a synthetic two-step plan so the existing progress,
+   * step-status, and failure rendering all apply unchanged. The snapshot is
+   * empty and `canUndo` is false: nothing local was rewritten, and nothing
+   * pushed can be taken back.
+   */
+  async publishOnly(cwd: string, ghPath: string, stack: Stack): Promise<void> {
+    if (this.session) {
+      throw new ApplyError(
+        'An apply is already in progress. Finish it, or use Abort / Dismiss in the plan panel.',
+      );
+    }
+
+    const steps = publishSteps();
+    const order = stack.branches.map((b) => b.name);
+    const head = await run('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd);
+
+    this.session = {
+      cwd,
+      ghPath,
+      stack,
+      plan: {
+        steps,
+        proposedOrder: order,
+        isNoop: false,
+        mergedBranches: [],
+        insertedBranches: [],
+        removedBranches: [],
+      },
+      order,
+      snapshot: {
+        refs: new Map(),
+        branch: head.code === 0 ? head.stdout.trim() : undefined,
+        metadata: '',
+        metadataPath: '',
+      },
+      cursor: 0,
+      statuses: steps.map(() => 'pending' as const),
+      scope: 'publish',
+      localComplete: true,
+      canUndo: false,
+    };
+
+    await this.drive();
+  }
+
+  /** Adopt a session persisted before a window reload. */
+  restore(state: PersistedSession): void {
+    this.session = {
+      cwd: state.cwd,
+      ghPath: state.ghPath,
+      stack: state.stack,
+      plan: state.plan,
+      order: state.order,
+      snapshot: {
+        refs: new Map(state.refs),
+        branch: state.branch,
+        metadata: state.metadata,
+        metadataPath: state.metadataPath,
+      },
+      cursor: state.cursor,
+      statuses: state.statuses,
+      scope: state.scope,
+      localComplete: state.localComplete,
+      canUndo: state.canUndo,
+      lastProgress: state.lastProgress,
+    };
+  }
+
   /** Roll every branch back to its pre-apply SHA and restore the metadata. */
   async abort(): Promise<void> {
     const session = this.require();
     const { cwd, snapshot } = session;
+
+    // A publish-only session rewrote nothing locally, so there is nothing to
+    // restore — and its empty metadataPath must not be written to.
+    if (snapshot.refs.size === 0 && !snapshot.metadataPath) {
+      this.publishProgress({ phase: 'failed', message: 'Nothing to roll back.' });
+      this.clear();
+      return;
+    }
 
     if (await rebaseInProgress(cwd)) {
       await run('git', ['rebase', '--abort'], cwd);
@@ -324,7 +514,7 @@ export class ApplyRunner {
     }
 
     this.publishProgress({ phase: 'failed', message: 'Rolled back. Every branch is back where it started.' });
-    this.session = undefined;
+    this.clear();
   }
 
   /** Push and submit, once the local reorder has landed. */
@@ -339,7 +529,13 @@ export class ApplyRunner {
 
   /** Drop the session without touching the repository. */
   dismiss(): void {
+    this.clear();
+  }
+
+  /** End the session and drop the persisted copy along with it. */
+  private clear(): void {
     this.session = undefined;
+    this.options.persist?.(undefined);
   }
 
   private require(): Session {
@@ -479,6 +675,9 @@ export class ApplyRunner {
       trunk: stack.trunk,
       trunkHead,
       branches: basesForOrder(order, trunkHead, (b) => tips.get(b)),
+      // Find the stack by the names still on disk. With a branch joining or
+      // leaving, the written set no longer matches what gh-stack recorded.
+      match: stack.branches.map((b) => b.name),
     });
     await writeFile(snapshot.metadataPath, next, 'utf8');
   }
@@ -507,7 +706,7 @@ export class ApplyRunner {
     });
 
     if (published) {
-      this.session = undefined;
+      this.clear();
     }
   }
 
@@ -522,6 +721,9 @@ export class ApplyRunner {
       ...patch,
     };
     session.lastProgress = progress;
+    // Persist before emitting: if the host dies rendering this, the state on
+    // disk is still the newer of the two.
+    this.options.persist?.(serialize(session));
     this.emit(progress);
   }
 }

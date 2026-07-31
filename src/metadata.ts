@@ -37,6 +37,16 @@ export interface MetadataUpdate {
   trunkHead: string;
   /** Bottom-to-top, matching the proposed order. */
   branches: BranchBase[];
+  /**
+   * Names to *find* the stack by, when they differ from the names being
+   * written — i.e. when a branch is joining or leaving the stack.
+   *
+   * Defaults to the written names, so a pure reorder is unaffected. The
+   * matching itself stays exact-set (see findStackIndex); only the set being
+   * matched against changes. The caller passes the pre-apply branch list, which
+   * is what is still on disk at the moment of the write.
+   */
+  match?: string[];
 }
 
 type Json = Record<string, unknown>;
@@ -96,7 +106,7 @@ export function rewriteMetadata(raw: string, update: MetadataUpdate): string {
     throw new Error('.git/gh-stack has no stacks array. Refusing to overwrite it.');
   }
 
-  const names = update.branches.map((b) => b.branch);
+  const names = update.match ?? update.branches.map((b) => b.branch);
   const index = findStackIndex(data.stacks, names);
   if (index < 0) {
     throw new Error(
