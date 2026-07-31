@@ -938,10 +938,136 @@ button:disabled {
   word-break: break-all;
 }
 
+/*
+ * Scaled down to the 11px row. At the default button size this reads as the
+ * row's main content rather than as the one action on a summary of a stack the
+ * user is not currently looking at.
+ */
+.stacks__item button {
+  flex: none;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
 .stacks__arrow {
   opacity: 0.45;
 }
 
 .stacks__trunk {
   opacity: 0.6;
+}
+
+/*
+ * The stack switcher, above the toolbar.
+ *
+ * Reuses the `.stacks*` rules above for the expanded list — the empty state
+ * and the switcher render the same rows through the same component — and adds
+ * only the collapsed header and the per-row detail the empty state has no use
+ * for. Hidden entirely below two stacks, so a single-stack repository pays
+ * nothing for it.
+ */
+.switcher {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+/*
+ * A whole-width button rather than a caret with a label beside it: the row is
+ * one target, which is what a disclosure control should be. Kept visually flat
+ * so it reads as a header and not as another toolbar action.
+ */
+.switcher__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.switcher__header:hover {
+  background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.08));
+}
+
+.switcher__caret {
+  opacity: 0.6;
+  font-size: 9px;
+}
+
+.switcher__summary {
+  font-weight: 600;
+}
+
+.switcher__trunk {
+  opacity: 0.6;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The stack HEAD is in. A left bar rather than a background, so the row still
+   reads as one of a set. */
+.stacks__item--active {
+  box-shadow: inset 2px 0 0 var(--vscode-button-background, #0078d4);
+}
+
+.switcher__number {
+  opacity: 0.6;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/*
+ * PR badges. Smaller and quieter than `.badge`: a switcher row is a summary of
+ * a stack you are not looking at, so the numbers are there to be scanned, not
+ * read one by one.
+ */
+.switcher__pr {
+  margin-left: 4px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+.switcher__pr--open {
+  color: var(--vscode-gitDecoration-untrackedResourceForeground, #3fb950);
+}
+
+/* A draft is open but not asking for review — stated, not coloured. */
+.switcher__pr--draft {
+  opacity: 0.6;
+}
+
+.switcher__pr--merged {
+  color: var(--vscode-charts-purple, #a371f7);
+}
+
+.switcher__pr--closed {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
+/* Matches `.badge--behind`: commits on the remote we do not have block a
+   rewrite, and the same fact should not be two different colours. */
+.switcher__behind {
+  margin-left: 6px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--vscode-editorError-foreground, #f85149);
+}
+
+.switcher__here {
+  font-size: 10px;
+  opacity: 0.6;
+  white-space: nowrap;
 }

@@ -187,6 +187,48 @@ export interface LocalStackSummary {
   branches: string[];
 }
 
+/**
+ * A pull request matched to a branch by head ref.
+ *
+ * `gh stack view` reports PRs for the stack HEAD is in and no other, so the
+ * only way to badge the stacks the user is *not* standing in is to ask GitHub
+ * directly — one `gh pr list` for the repository, matched on `headRefName`.
+ * Absent entirely when there is no remote, or the call failed: a switcher row
+ * without badges is worth more than no switcher.
+ */
+export interface BranchPr {
+  number: number;
+  url: string;
+  title: string;
+  state: PullRequestState;
+  isDraft: boolean;
+}
+
+/**
+ * One stack in `.git/gh-stack`, enriched enough to render a switcher row.
+ *
+ * The counterpart to `Stack`, which is what `gh stack view` reports for the one
+ * stack HEAD is in. This is every stack, in less detail — no per-branch base
+ * SHAs and no `needsRebase`, because nothing short of gh-stack itself can
+ * compute those for a stack we are not standing in.
+ */
+export interface StackSummary extends LocalStackSummary {
+  /**
+   * 1-based position in the `stacks` array — the number `gh stack checkout <n>`
+   * takes, and display-only. Identity is the branch set (see findStackIndex in
+   * metadata.ts); an index is not stable across a stack being removed.
+   */
+  index: number;
+  /** True when HEAD is in this stack — the one `gh stack view` reports. */
+  isActive: boolean;
+  /** Keyed by branch name. Empty when there is no remote, or the call failed. */
+  prs: Record<string, BranchPr>;
+  /** Local commits the remote does not have, summed over the stack's branches. */
+  ahead: number;
+  /** Remote commits we do not have. Non-zero is what blocks a rewrite. */
+  behind: number;
+}
+
 /** Discriminated result of reading the stack, so the UI can render each case. */
 export type StackResult =
   | { kind: 'ok'; stack: Stack }
@@ -206,8 +248,6 @@ export type StackResult =
        * before `gh stack init`, which records the trunk by name.
        */
       remoteBranches?: string[];
-      /** Stacks that exist locally but do not contain the current branch. */
-      stacks?: LocalStackSummary[];
     }
   | { kind: 'not-a-repo'; message: string }
   | { kind: 'gh-missing'; message: string }
@@ -224,6 +264,12 @@ export type HostMessage =
       canPublish: boolean;
       /** Ahead/behind for the trunk and each branch. Absent with no stack. */
       remote?: RemoteState;
+      /**
+       * Every stack in `.git/gh-stack`, whichever one HEAD is in — so the
+       * switcher renders the same way from inside a stack and from outside
+       * one. Empty in a repository with no stacks at all.
+       */
+      stacks: StackSummary[];
     }
   | { type: 'plan'; plan: Plan }
   | { type: 'loading' }
@@ -303,4 +349,21 @@ export type WebviewMessage =
    */
   | { type: 'openMergeEditor'; path: string }
   | { type: 'checkout'; branch: string }
+  /**
+   * Make another stack the active one, by its `StackSummary.index`.
+   *
+   * A checkout, not a mode switch: `gh stack view` reports the stack HEAD is
+   * in and no other, so standing in a stack is what makes it renderable. The
+   * host checks out its top branch, which is the same thing the empty state's
+   * per-stack button has always done.
+   */
+  | { type: 'switchStack'; index: number }
+  /**
+   * Start a stack alongside the ones already here.
+   *
+   * `gh stack init` refuses while HEAD is part of a stack, so this is a
+   * request to leave the current one — the host confirms, checks out the
+   * trunk, and the ordinary no-stack view takes it from there.
+   */
+  | { type: 'newStack' }
   | { type: 'showLog' };

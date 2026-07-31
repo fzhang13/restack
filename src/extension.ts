@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readStack } from './stack';
-import { readCandidates, readBranchCandidates } from './candidates';
+import { readBranchCandidates } from './candidates';
 import { addArgs, changeBasePlan, computePlan, initArgs, syncPlan, unstackArgs } from './plan';
 import {
   detectRemote,
@@ -26,13 +26,13 @@ import {
   detectTrunk,
   initPreflight,
   listLocalBranches,
-  readLocalStacks,
   runAdd,
   runInit,
   runUnstack,
   unstackPreflight,
   type UnstackScope,
 } from './init';
+import { readPullRequests, readStackSummaries, topBranchOf, type PrIndex } from './stacks';
 import type {
   ApplyScope,
   CandidateBranch,
@@ -41,6 +41,7 @@ import type {
   RemoteState,
   Stack,
   StackResult,
+  StackSummary,
   WebviewMessage,
 } from './model';
 
@@ -65,6 +66,17 @@ class StackViewProvider implements vscode.WebviewViewProvider {
   private lastOrder?: string[];
   private lastCandidates: CandidateBranch[] = [];
   private lastRemote?: RemoteState;
+  /** Every stack in the repository, for the switcher. See stacks.ts. */
+  private lastStacks: StackSummary[] = [];
+  /**
+   * Pull requests for the whole repository, keyed by head branch.
+   *
+   * Cached because refresh() runs on every `.git/HEAD` change — once per rebase
+   * step during an apply — and this is the only part of it that reaches the
+   * network. Refilled by fetch() and by an explicit stack switch, which are the
+   * two moments the user has asked for current information.
+   */
+  private prs: PrIndex = new Map();
   private readonly runner: ApplyRunner;
   private readonly log: vscode.OutputChannel;
   private readonly status: vscode.StatusBarItem;
@@ -256,6 +268,12 @@ class StackViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'checkout':
           void this.handleCheckout(message.branch);
+          break;
+        case 'switchStack':
+          void this.handleSwitchStack(message.index);
+          break;
+        case 'newStack':
+          void this.handleNewStack();
           break;
         case 'showLog':
           this.log.show(true);
@@ -455,6 +473,138 @@ class StackViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Make another stack the active one.
+   *
+   * A checkout, not a mode switch. `gh stack view` reports the stack HEAD is in
+   * and no other, so standing in a stack is what makes it renderable in full —
+   * with its recorded base SHAs, its drift flags, and its PR state. Rendering a
+   * stack we are *not* standing in would mean synthesizing all of that from
+   * `.git/gh-stack`, which is gh-stack's job and not ours.
+   *
+   * The top branch, for topBranchOf's reason: it is the one branch that can
+   * only belong to this stack. Everything else here is handleCheckout's, which
+   * already refuses a dirty tree, a foreign rebase, and an apply in flight.
+   */
+  private async handleSwitchStack(index: number): Promise<void> {
+    const target = this.lastStacks.find((s) => s.index === index);
+    if (!target || target.isActive) {
+      return;
+    }
+
+    const top = topBranchOf(target);
+    if (!top) {
+      // readLocalStacks drops branchless entries, so this is unreachable —
+      // but the switcher would otherwise check out `undefined`.
+      void vscode.window.showErrorMessage(`Restack: stack ${index} has no branches to check out.`);
+      return;
+    }
+
+    // The user asked to look at a different stack, so the badges on it should
+    // not be from whenever the window happened to open. Best-effort: a failed
+    // call leaves the previous index in place rather than blanking the rows.
+    this.prs = await readPullRequests(this.workspacePath() ?? '', this.ghPath());
+    await this.handleCheckout(top);
+  }
+
+  /**
+   * Start a stack alongside the ones already here.
+   *
+   * `gh stack init` exits with `current branch %q is already part of a stack`,
+   * so a second stack cannot be created from inside the first. That is a real
+   * gh-stack rule and not one to work around — the answer is to leave, which is
+   * a checkout of the trunk and therefore something to confirm rather than do
+   * quietly.
+   *
+   * Nothing is created here. Once HEAD is outside every stack the ordinary
+   * no-stack path renders InitView, which is where a stack is actually made.
+   */
+  private async handleNewStack(): Promise<void> {
+    const cwd = this.workspacePath();
+    if (!cwd) {
+      return;
+    }
+
+    if (this.runner.active) {
+      void vscode.window.showWarningMessage(
+        'Restack: an apply is in progress. Finish or dismiss it first.',
+      );
+      return;
+    }
+
+    // Already outside a stack: the view is showing InitView, and there is
+    // nothing to step out of.
+    const stack = this.lastStack;
+    if (!stack) {
+      await this.refresh();
+      return;
+    }
+
+    const trunk = stack.trunk;
+    const confirmed = await vscode.window.showInformationMessage(
+      `Leave this stack to start another?`,
+      {
+        modal: true,
+        detail:
+          `gh-stack refuses to create a stack while HEAD is part of one, so Restack ` +
+          `will check out ${trunk} first. This stack is untouched — every branch, ` +
+          `commit, and pull request stays exactly where it is, and the switcher will ` +
+          `still list it.`,
+      },
+      `Check Out ${trunk}`,
+    );
+    if (confirmed !== `Check Out ${trunk}`) {
+      return;
+    }
+
+    // Via handleCheckout for its guards — a dirty tree blocks `gh stack init`
+    // anyway (initPreflight), so being refused here costs nothing.
+    await this.handleCheckout(trunk);
+  }
+
+  /** Palette entry point: pick a stack rather than being handed one. */
+  async switchStack(): Promise<void> {
+    if (this.lastStacks.length === 0) {
+      await this.refresh();
+    }
+    if (this.lastStacks.length === 0) {
+      void vscode.window.showInformationMessage(
+        'Restack: no stacks in this repository yet. Open the Restack view to create one.',
+      );
+      return;
+    }
+
+    const items = this.lastStacks.map((s) => ({
+      index: s.index,
+      label: `${s.isActive ? '$(check) ' : '$(circle-outline) '}Stack ${s.index}`,
+      description: [...s.branches].reverse().join(' ← '),
+      detail: [
+        `on ${s.trunk}`,
+        `${s.branches.length} branch${s.branches.length === 1 ? '' : 'es'}`,
+        Object.keys(s.prs).length > 0 ? `${Object.keys(s.prs).length} PRs` : '',
+        s.behind > 0 ? `${s.behind} behind` : '',
+      ]
+        .filter(Boolean)
+        .join(' · '),
+    }));
+
+    const picked = await vscode.window.showQuickPick(items, {
+      title: 'Switch to a stack in this repository',
+      placeHolder: 'Checks out that stack’s top branch',
+    });
+    if (picked) {
+      await this.handleSwitchStack(picked.index);
+    }
+  }
+
+  /** Palette entry point for the toolbar's New stack button. */
+  async newStack(): Promise<void> {
+    if (!this.lastStack) {
+      await this.refresh();
+    }
+    await this.handleNewStack();
+  }
+
+  /**
    * Mirror HEAD's position in the status bar, so the stack is legible without
    * the view open. Hidden whenever there is no stack to be positioned within.
    */
@@ -470,13 +620,22 @@ class StackViewProvider implements vscode.WebviewViewProvider {
 
     // Counted from the bottom, so it reads the same way the column does.
     const position = onTrunk ? 'trunk' : index >= 0 ? `${index + 1}/${total}` : 'outside';
-    this.status.text = `$(git-branch) ${stack.currentBranch} ${position}`;
+    // Which stack, when there is more than one to be in. Silent otherwise: in
+    // the ordinary single-stack repository "stack 1 of 1" is noise.
+    const active = this.lastStacks.find((s) => s.isActive);
+    const which =
+      this.lastStacks.length > 1 && active
+        ? ` · stack ${active.index} of ${this.lastStacks.length}`
+        : '';
+
+    this.status.text = `$(git-branch) ${stack.currentBranch} ${position}${which}`;
     this.status.tooltip =
       (onTrunk
         ? `On ${stack.trunk}, the trunk this stack sits on.`
         : index >= 0
           ? `On ${stack.currentBranch} — branch ${index + 1} of ${total} in the stack.`
           : `On ${stack.currentBranch}, which is not part of this stack.`) +
+      (which ? `\n\nThis repository has ${this.lastStacks.length} stacks.` : '') +
       '\n\nClick to check out another branch in the stack.';
     this.status.show();
   }
@@ -814,6 +973,12 @@ class StackViewProvider implements vscode.WebviewViewProvider {
         void vscode.window.showErrorMessage(`Restack: ${failure}`);
         this.log.show(true);
       }
+
+      // The switcher's PR badges are the other half of "as of the last fetch",
+      // and this button is what that phrase refers to. Best-effort, like the
+      // fetch above: a failed call leaves the previous badges rather than
+      // blanking every row.
+      this.prs = await readPullRequests(cwd, this.ghPath());
 
       // Either way: a partial fetch still moved some refs, and the counts
       // should reflect what is actually on disk.
@@ -1408,6 +1573,7 @@ class StackViewProvider implements vscode.WebviewViewProvider {
         result: { kind: 'error', message: 'Open a folder to read its stack.' },
         candidates: [],
         canPublish: false,
+        stacks: [],
       });
       return;
     }
@@ -1416,7 +1582,6 @@ class StackViewProvider implements vscode.WebviewViewProvider {
     const cwd = folder.uri.fsPath;
     let result: StackResult = await readStack(cwd, this.ghPath());
     this.lastStack = result.kind === 'ok' ? result.stack : undefined;
-    this.updateStatus(this.lastStack);
     // Local ref reads only — no network — so this is safe on the .git/HEAD
     // watcher path, which fires on every checkout and every rebase step.
     this.lastRemote = this.lastStack ? await readRemoteState(cwd, this.lastStack) : undefined;
@@ -1425,21 +1590,31 @@ class StackViewProvider implements vscode.WebviewViewProvider {
     this.lastPlan = undefined;
     this.lastOrder = undefined;
 
-    // With no stack to read, the view still needs branches to offer and a
-    // trunk to base them on — and the stacks already on disk, which are what
-    // separate "there is nothing here" from "you are just standing outside
-    // one". Branches already in some other stack are excluded: adopting one
-    // into a second stack is not something gh-stack models.
+    // Every stack in the repository, not just the one HEAD is in — the
+    // switcher renders the same list from inside a stack and from outside one.
+    // Reads `.git/gh-stack` plus local refs; the PR badges come from the cache,
+    // so this stays free of network calls on the .git/HEAD watcher path.
+    this.lastStacks = await readStackSummaries(
+      cwd,
+      this.lastStack?.branches.map((b) => b.name) ?? [],
+      this.prs,
+    );
+    // Late, because it reads lastStacks for the "stack N of M" suffix.
+    this.updateStatus(this.lastStack);
+
+    // Branches already in *some* stack are excluded from the tray, not just the
+    // ones in this stack: dropping another stack's branch into this one would
+    // put it in two, which is the ambiguity gh-stack refuses with `branch %q
+    // belongs to multiple stacks`. With no stack to read, the view still needs
+    // branches to offer and a trunk to base them on.
+    const claimed = new Set(this.lastStacks.flatMap((s) => s.branches));
     let candidates: CandidateBranch[] = [];
     if (this.lastStack) {
-      candidates = await readCandidates(cwd, this.lastStack);
+      candidates = await readBranchCandidates(cwd, this.lastStack.trunk, claimed);
     } else if (result.kind === 'no-stack') {
-      const [{ trunk, localBranches, remoteBranches }, stacks] = await Promise.all([
-        detectTrunk(cwd),
-        readLocalStacks(cwd),
-      ]);
-      candidates = await readBranchCandidates(cwd, trunk, new Set(stacks.flatMap((s) => s.branches)));
-      result = { ...result, trunk, localBranches, remoteBranches, stacks };
+      const { trunk, localBranches, remoteBranches } = await detectTrunk(cwd);
+      candidates = await readBranchCandidates(cwd, trunk, claimed);
+      result = { ...result, trunk, localBranches, remoteBranches };
     }
     this.lastCandidates = candidates;
 
@@ -1449,6 +1624,7 @@ class StackViewProvider implements vscode.WebviewViewProvider {
       candidates,
       canPublish: await hasOrigin(cwd),
       remote: this.lastRemote,
+      stacks: this.lastStacks,
     });
   }
 
@@ -1548,6 +1724,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('restack.changeBase', () => provider.changeBase()),
     vscode.commands.registerCommand('restack.removeStack', () => provider.removeStack()),
     vscode.commands.registerCommand('restack.checkoutBranch', () => provider.checkoutBranch()),
+    vscode.commands.registerCommand('restack.switchStack', () => provider.switchStack()),
+    vscode.commands.registerCommand('restack.newStack', () => provider.newStack()),
     vscode.commands.registerCommand('restack.showLog', () => log.show()),
   );
 

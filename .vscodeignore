@@ -13,6 +13,7 @@ test/**
 fixtures/**
 sandbox/**
 sandbox-conflict/**
+sandbox-multi/**
 
 # Sources and build scripts for the marketplace art. media/icon.png and
 # media/screenshot.png ship; what generates them does not.

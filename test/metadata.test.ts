@@ -100,6 +100,52 @@ test('matches gh-stack’s own formatting so the diff shows only the reorder', (
   assert.deepEqual(JSON.parse(out), JSON.parse(raw));
 });
 
+test('rewriting one stack of three leaves the other two byte-identical', () => {
+  // A repository routinely holds several stacks — gh-stack stores them in one
+  // array, and this file is another tool's state. Rewriting the middle one and
+  // touching a neighbour would corrupt a stack the user was not even looking
+  // at, which is the highest-consequence failure this module has.
+  const one = JSON.parse(fixture()).stacks[0];
+  const raw = JSON.stringify(
+    {
+      schemaVersion: 1,
+      repository: '',
+      stacks: [
+        { trunk: { branch: 'main', head: TRUNK }, branches: [{ branch: 'db/schema', base: TRUNK }] },
+        one,
+        { trunk: { branch: 'main', head: TRUNK }, branches: [{ branch: 'docs/readme', base: TRUNK }] },
+      ],
+    },
+    null,
+    2,
+  );
+
+  const out = rewriteMetadata(raw, {
+    trunk: 'main',
+    trunkHead: NEW_TRUNK,
+    branches: [
+      { branch: 'feat/api', base: NEW_TRUNK },
+      { branch: 'feat/ui', base: NEW_API },
+      { branch: 'feat/auth', base: NEW_UI },
+    ],
+  });
+
+  const before = JSON.parse(raw).stacks;
+  const after = JSON.parse(out).stacks;
+
+  assert.equal(after.length, 3);
+  assert.deepEqual(after[0], before[0]);
+  assert.deepEqual(after[2], before[2]);
+  assert.deepEqual(
+    after[1].branches.map((b: { branch: string }) => b.branch),
+    ['feat/api', 'feat/ui', 'feat/auth'],
+  );
+  // The trunk head advanced on the rewritten stack only, even though all three
+  // record the same trunk branch.
+  assert.equal(after[1].trunk.head, NEW_TRUNK);
+  assert.equal(after[0].trunk.head, TRUNK);
+});
+
 test('refuses an unrecognized schemaVersion instead of guessing', () => {
   const bumped = JSON.stringify({ ...JSON.parse(fixture()), schemaVersion: 2 });
   assert.throws(

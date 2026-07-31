@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+
+- **Several stacks in one repository.** gh-stack has always allowed this —
+  `.git/gh-stack` is an array of stacks, and `gh stack checkout` takes a stack
+  number — but Restack could only ever see one. `gh stack view` reports the
+  stack HEAD is in and nothing else, so from inside a stack every other stack in
+  the repository was invisible: not listed, not reachable, and creating a second
+  one meant knowing to check out the trunk from a terminal first.
+
+  There is now a switcher above the toolbar listing every stack, with a PR badge
+  per branch and `↓N` where the remote has commits that would block a rewrite.
+  It stays collapsed to one line and disappears entirely below two stacks, so a
+  one-stack repository is unchanged.
+
+  Switching is a **checkout**, not a display mode: Restack checks out that
+  stack's top branch and `gh stack view` reports it in full. The top rather than
+  the trunk, because a stack's trunk is routinely another stack's branch, and
+  standing on a shared branch is the ambiguity gh-stack refuses. This keeps one
+  render path — everything below the switcher works identically whichever stack
+  you are in, rather than a second, degraded view for stacks you are not
+  standing in.
+
+  **+ New stack** in the toolbar creates another. `gh stack init` refuses while
+  HEAD is part of a stack, so it confirms and then checks out the trunk; the
+  existing stack is untouched. `Restack: Switch Stack` and `Restack: New Stack`
+  do the same from the command palette, and the status bar gains `· stack 2 of
+  3` where it applies.
+
+### Fixed
+
+- **A branch could be dragged into two stacks at once.** The Available tray
+  excluded the branches of the stack on screen, but not those of any *other*
+  stack in the repository — so in a two-stack repo, the second stack's branches
+  were offered as insertable, and dropping one in recorded it as a member of
+  both. That is precisely what gh-stack refuses with `branch %q belongs to
+  multiple stacks`, and it left `.git/gh-stack` in a state gh-stack itself would
+  reject. The tray now excludes every branch claimed by any stack. The
+  empty-state builder already did this correctly; only the in-stack view was
+  affected.
+
+- **Standing on a shared trunk showed a failure screen.** With two stacks based
+  on `main`, `gh stack view` on `main` exits 6 with `branch "main" belongs to
+  multiple stacks` — there is no single stack to report. Restack classified that
+  as a hard error, so the most ordinary resting position in a multi-stack
+  repository rendered "Could not read stack" in red. It is now the same
+  no-stack screen as any unstacked branch, which is where the switcher lists
+  the stacks to choose from.
+
 ## 0.3.2
 
 ### Security

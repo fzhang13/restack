@@ -11,6 +11,17 @@ const execFileAsync = promisify(execFile);
  */
 const EXIT_NOT_APPLICABLE = 2;
 
+/**
+ * `branch %q belongs to multiple stacks; checkout a non-trunk branch first`.
+ *
+ * Its own exit code, and the normal resting position in a repository with more
+ * than one stack: a trunk is shared by every stack based on it, so `main` is
+ * ambiguous the moment a second stack exists. Not an error — there is simply no
+ * single stack to report — so it lands on the same `no-stack` screen as an
+ * unstacked branch, which is where the switcher offers the way out.
+ */
+const EXIT_AMBIGUOUS = 6;
+
 interface ExecError extends Error {
   code?: number | string;
   stdout?: string;
@@ -59,6 +70,15 @@ export async function readStack(cwd: string, ghPath = 'gh'): Promise<StackResult
       if (combined.includes('not part of a stack')) {
         return { kind: 'no-stack', message: stderr || 'This branch is not part of a stack.' };
       }
+    }
+
+    // Matched on the message as well as the code, since an exit code alone is
+    // a thin thing to hang a screen on across gh-stack versions.
+    if (e.code === EXIT_AMBIGUOUS || combined.includes('belongs to multiple stacks')) {
+      return {
+        kind: 'no-stack',
+        message: stderr || 'This branch belongs to more than one stack. Choose one below.',
+      };
     }
 
     return { kind: 'error', message: stderr || e.message || 'Failed to read stack.' };

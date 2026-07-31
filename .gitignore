@@ -7,4 +7,5 @@ dist/
 # Scratch repos with their own .git, used for manual testing only.
 sandbox/
 sandbox-conflict/
+sandbox-multi
 test/harness/driver.js

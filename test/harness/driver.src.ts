@@ -1,6 +1,12 @@
 import { parseStack } from '../../src/parse';
 import { changeBasePlan, computePlan, publishSteps, syncPlan } from '../../src/plan';
-import type { CandidateBranch, RemoteState, StackBranch, Tracking } from '../../src/model';
+import type {
+  CandidateBranch,
+  RemoteState,
+  StackBranch,
+  StackSummary,
+  Tracking,
+} from '../../src/model';
 import fixture from '../../fixtures/stack-no-prs.json';
 
 /**
@@ -37,11 +43,57 @@ const candidates: CandidateBranch[] = [
  *   ?view=diverged a stack branch is behind its upstream — the blocking banner
  *   ?view=remote-base a stack based on a colleague's branch, not on main
  *   ?view=no-remote no remote at all: Fetch disabled, no badges anywhere
+ *   ?view=multi   three stacks in one repository — the switcher
  */
 const view = new URLSearchParams(location.search).get('view') ?? '';
 
-/** Stacks gh-stack has recorded, for the "standing outside one" case. */
-const localStacks = [{ trunk: 'main', branches: ['feat/auth', 'feat/api', 'feat/ui'] }];
+/**
+ * Stacks gh-stack has recorded, as readStackSummaries reports them.
+ *
+ * Three, because two would not show the difference between "the active one"
+ * and "the rest". The second is `isActive` in the multi view, and the third is
+ * deliberately merged-and-behind: the switcher's job is to make a stack you are
+ * not standing in legible, and one wanting cleanup is the case that matters.
+ */
+const localStacks: StackSummary[] = [
+  {
+    index: 1,
+    trunk: 'main',
+    branches: ['feat/auth', 'feat/api', 'feat/ui'],
+    isActive: false,
+    prs: {
+      'feat/auth': { number: 41, url: '', title: 'auth', state: 'open', isDraft: false },
+      'feat/api': { number: 42, url: '', title: 'api', state: 'open', isDraft: true },
+    },
+    ahead: 3,
+    behind: 0,
+  },
+  {
+    index: 2,
+    trunk: 'main',
+    branches: ['db/schema', 'db/seed'],
+    isActive: false,
+    prs: { 'db/schema': { number: 38, url: '', title: 'schema', state: 'open', isDraft: false } },
+    ahead: 2,
+    behind: 0,
+  },
+  {
+    index: 3,
+    trunk: 'release/2.0',
+    branches: ['hotfix/token-expiry'],
+    isActive: false,
+    prs: {
+      'hotfix/token-expiry': { number: 35, url: '', title: 'expiry', state: 'merged', isDraft: false },
+    },
+    ahead: 0,
+    behind: 4,
+  },
+];
+
+/** The same list with one marked active, for views where HEAD is in a stack. */
+function stacksWithActive(index: number): StackSummary[] {
+  return localStacks.map((s) => ({ ...s, isActive: s.index === index }));
+}
 
 /** Remote-tracking refs, for the init view's remote optgroup. */
 const remoteBranches = ['origin/main', 'origin/colleague/feature', 'origin/release/2.0'];
@@ -96,10 +148,10 @@ function sendStack() {
           trunk: 'main',
           localBranches: ['main', 'develop', 'spike/cache', 'chore/deps'],
           remoteBranches,
-          stacks: view === 'outside' ? localStacks : [],
         },
         candidates,
         canPublish: true,
+        stacks: view === 'outside' ? localStacks : [],
       },
       '*',
     );
@@ -132,7 +184,17 @@ function sendStack() {
   const shown = (stacks[view] ?? stack) as typeof stack;
   const result = { kind: 'ok', stack: shown };
   window.postMessage(
-    { type: 'stack', result, candidates, canPublish: true, remote: remoteFor(shown.trunk) },
+    {
+      type: 'stack',
+      result,
+      candidates,
+      canPublish: true,
+      remote: remoteFor(shown.trunk),
+      // Only the multi view has more than one stack; everywhere else the
+      // switcher renders nothing, which is what a one-stack repository should
+      // see. Stack 1 is the one this fixture describes.
+      stacks: view === 'multi' ? stacksWithActive(1) : [],
+    },
     '*',
   );
 
