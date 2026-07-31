@@ -40,15 +40,55 @@ export interface Stack {
   branches: StackBranch[];
 }
 
+/**
+ * How a step is executed. `command` is display only; `exec` is what actually
+ * runs, so the two can never drift. `file` is a token rather than a path
+ * because `gh` resolves against the `restack.ghPath` setting at run time.
+ *
+ * Absent on the `metadata` step, which Restack performs itself rather than
+ * shelling out — gh-stack exposes no command for it.
+ */
+export interface StepExec {
+  file: 'git' | 'gh';
+  args: string[];
+}
+
 /** A single step in a reorder plan. */
 export interface PlanStep {
-  kind: 'rebase' | 'push' | 'submit';
+  kind: 'rebase' | 'metadata' | 'push' | 'submit';
   /** Branch this step acts on, when applicable. */
   branch?: string;
   /** Human-readable shell command, ready to copy. */
   command: string;
   /** Short explanation shown under the command in the UI. */
   note?: string;
+  exec?: StepExec;
+}
+
+/** Steps up to and including `metadata` are local; the rest touch GitHub. */
+export type ApplyScope = 'local' | 'publish';
+
+export type ApplyPhase = 'running' | 'conflict' | 'done' | 'failed';
+
+export interface ApplyProgress {
+  phase: ApplyPhase;
+  scope: ApplyScope;
+  /** Index into `Plan.steps` of the step running, finished, or failed. */
+  stepIndex: number;
+  /** Per-step status, parallel to `Plan.steps`. */
+  statuses: Array<'pending' | 'running' | 'done' | 'failed' | 'skipped'>;
+  message?: string;
+  /** Branch whose rebase stopped on a conflict. */
+  conflictBranch?: string;
+  /** Unmerged paths, so the UI can list what to resolve. */
+  conflictFiles?: string[];
+  /**
+   * True once the rebases and the metadata write have landed. Gates the
+   * push/submit button, and gates undo: once pushed, undo is off the table.
+   */
+  localComplete?: boolean;
+  /** True while branch SHAs can still be restored from the pre-apply snapshot. */
+  canUndo?: boolean;
 }
 
 export interface Plan {
@@ -76,11 +116,21 @@ export type StackResult =
 export type HostMessage =
   | { type: 'stack'; result: StackResult }
   | { type: 'plan'; plan: Plan }
-  | { type: 'loading' };
+  | { type: 'loading' }
+  | { type: 'apply'; progress: ApplyProgress }
+  | { type: 'applyCleared' };
 
 /** Messages: webview -> extension host. */
 export type WebviewMessage =
   | { type: 'ready' }
   | { type: 'refresh' }
   | { type: 'reorder'; order: string[] }
-  | { type: 'copyPlan'; text: string };
+  | { type: 'copyPlan'; text: string }
+  /** Run the local steps: rebases, then the gh-stack metadata write. */
+  | { type: 'apply'; order: string[] }
+  /** Run push + submit against an already-applied local reorder. */
+  | { type: 'publish' }
+  | { type: 'applyContinue' }
+  | { type: 'applyAbort' }
+  | { type: 'applyUndo' }
+  | { type: 'applyDismiss' };

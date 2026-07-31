@@ -94,14 +94,45 @@ test('moving the bottom branch to the top replays the whole stack', () => {
   anchors.forEach((a) => assert.match(a, /^[0-9a-f]{40}$/));
 });
 
-test('plan ends with force-with-lease push then submit', () => {
+test('plan ends with metadata, force-with-lease push, then submit', () => {
   const stack = parseStack(fixture);
   const plan = computePlan(stack, ['feat/auth', 'feat/ui', 'feat/api']);
   const kinds = plan.steps.map((s) => s.kind);
-  assert.deepEqual(kinds.slice(-2), ['push', 'submit']);
+  assert.deepEqual(kinds.slice(-3), ['metadata', 'push', 'submit']);
+
   const push = plan.steps.at(-2)!;
   assert.match(push.command, /--force-with-lease/);
-  assert.equal(plan.steps.at(-1)!.command, 'gh stack submit');
+  // --auto is required: the interactive editor cannot run from a webview.
+  assert.equal(plan.steps.at(-1)!.command, 'gh stack submit --auto');
+});
+
+test('the metadata step is a shell comment, so copied plans stay pasteable', () => {
+  const stack = parseStack(fixture);
+  const plan = computePlan(stack, ['feat/auth', 'feat/ui', 'feat/api']);
+  const step = plan.steps.find((s) => s.kind === 'metadata')!;
+
+  assert.match(step.command, /^#/);
+  // No exec: Restack writes this file itself, gh-stack exposes no command for it.
+  assert.equal(step.exec, undefined);
+  // It must land after every rebase — the bases it records are post-rebase tips.
+  const lastRebase = plan.steps.map((s) => s.kind).lastIndexOf('rebase');
+  assert.ok(plan.steps.indexOf(step) > lastRebase);
+});
+
+test('every executable step carries argv matching its displayed command', () => {
+  const stack = parseStack(fixture);
+  const plan = computePlan(stack, ['feat/api', 'feat/ui', 'feat/auth']);
+
+  for (const step of plan.steps) {
+    if (!step.exec) {
+      continue;
+    }
+    // Display is derived from argv, so a drift here means apply would run
+    // something other than what the panel showed.
+    assert.equal(step.command, `${step.exec.file} ${step.exec.args.join(' ')}`);
+  }
+
+  assert.ok(plan.steps.filter((s) => s.exec).length >= 4);
 });
 
 test('reports merged branches so the UI can refuse to reorder them', () => {

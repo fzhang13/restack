@@ -3,6 +3,7 @@ dist/
 *.vsix
 .DS_Store
 
-# Scratch repo with its own .git, used for manual testing only.
+# Scratch repos with their own .git, used for manual testing only.
 sandbox/
+sandbox-conflict/
 test/harness/driver.js
