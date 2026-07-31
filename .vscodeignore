@@ -1,0 +1,33 @@
+# Everything is bundled into dist/ by esbuild, so the extension ships as four
+# files plus the icon. Without this, vsce walks node_modules and packages ~6 MB
+# of dependencies that are already inlined in the bundle.
+
+node_modules/**
+
+.vscode/**
+.claude/**
+.github/**
+
+src/**
+test/**
+fixtures/**
+sandbox/**
+sandbox-conflict/**
+
+# Source for media/icon.png, rasterized by hand; not needed at runtime.
+media/marketplace-icon.svg
+
+esbuild.mjs
+tsconfig.json
+package-lock.json
+.gitignore
+.vscodeignore
+
+# Production builds emit no sourcemaps, but esbuild does not clean the
+# directory, so stale ones from a dev build would otherwise be picked up.
+**/*.map
+**/*.ts
+**/*.tsx
+
+*.vsix
+.DS_Store

@@ -37,7 +37,14 @@ button:disabled {
 
 .toolbar {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+}
+
+/* Push the publish action away from the two local-only buttons: it is the one
+   here that leaves the machine. */
+.toolbar__publish {
+  margin-left: auto;
 }
 
 .warn {
@@ -201,6 +208,23 @@ button:disabled {
   font-style: italic;
 }
 
+/* A link, not a control: the button element is only there for keyboard and
+   screen-reader semantics. */
+.pr--link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--vscode-textLink-foreground);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.pr--link:hover:not(:disabled) {
+  background: none;
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+  text-decoration: underline;
+}
+
 .badge {
   font-size: 9px;
   text-transform: uppercase;
@@ -212,6 +236,103 @@ button:disabled {
 
 .badge--needs-rebase {
   color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.badge--leaving {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.15));
+}
+
+/*
+ * The tray of branches outside the stack. Deliberately not a third column: at
+ * sidebar width the two existing ones already collapse to one.
+ */
+.tray__list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 34px;
+  border: 1px dashed var(--vscode-widget-border, rgba(127, 127, 127, 0.35));
+  border-radius: 4px;
+}
+
+/* Drop affordance, strong enough to read at a glance mid-drag. */
+.tray__list--over {
+  border-style: solid;
+  border-color: var(--vscode-focusBorder);
+  background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.08));
+}
+
+.tray__list--empty {
+  justify-content: center;
+}
+
+.tray__hint {
+  padding: 2px 4px;
+  font-size: 11px;
+  opacity: 0.5;
+}
+
+.candidate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 7px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.candidate--draggable {
+  cursor: grab;
+}
+
+.candidate--draggable:hover {
+  background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.1));
+}
+
+.candidate--draggable:active {
+  cursor: grabbing;
+}
+
+.candidate--dragging > * {
+  opacity: 0.35;
+}
+
+/* A branch on its way out of the stack, tinted like a deletion to distinguish
+   it from the branches that were merely never in it. */
+.candidate--leaving {
+  background: var(--vscode-diffEditor-removedTextBackground, rgba(200, 80, 80, 0.14));
+  border-color: var(--vscode-diffEditor-removedTextBorder, rgba(200, 80, 80, 0.35));
+}
+
+.candidate__dot {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  margin-left: 2px;
+  border-radius: 50%;
+  /* Hollow, unlike a stacked branch's filled node: not on the rail. */
+  box-shadow: inset 0 0 0 1px var(--vscode-widget-border, rgba(127, 127, 127, 0.8));
+}
+
+.candidate__count {
+  font-size: 10px;
+  opacity: 0.5;
+}
+
+/* The row under the cursor mid-drag. Rebuilt rather than cloned, so it needs
+   its own surface — it sits outside both containers. */
+.row--overlay {
+  padding: 5px 7px 5px 4px;
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  cursor: grabbing;
 }
 
 /* The base of the graph: the rail runs down from the last branch into trunk. */
@@ -409,6 +530,23 @@ button:disabled {
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 11px;
   color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+/* Opens the file in the editor; styled as the path it is, not as a button. */
+.conflicts__file {
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.conflicts__file:hover:not(:disabled) {
+  background: none;
+}
+
+.conflicts__file:hover code {
+  text-decoration: underline;
 }
 
 .applying__actions {

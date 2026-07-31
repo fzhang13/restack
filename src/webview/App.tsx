@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   DndContext,
+  DragOverlay,
   PointerSensor,
   KeyboardSensor,
   closestCenter,
+  useDroppable,
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragStartEvent,
 } from '@dnd-kit/core';
 import {
   SortableContext,
@@ -18,6 +21,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import type {
   ApplyProgress,
+  CandidateBranch,
   HostMessage,
   Plan,
   Stack,
@@ -40,6 +44,18 @@ function toModelOrder(names: string[]): string[] {
   return [...names].reverse();
 }
 
+/** Droppable id for the tray, distinct from any branch name. */
+const TRAY_ID = '__tray__';
+
+const EMPTY_PLAN: Plan = {
+  steps: [],
+  proposedOrder: [],
+  isNoop: true,
+  mergedBranches: [],
+  insertedBranches: [],
+  removedBranches: [],
+};
+
 /**
  * Node colours cycle by the branch's position in the *current* stack, so a
  * branch keeps its colour when dragged. An out-of-sequence colour run in the
@@ -57,14 +73,43 @@ function Node({ index }: { index: number }) {
   );
 }
 
+/** The PR number, clickable when gh-stack gave us a URL for it. */
+function PrTag({ branch }: { branch: StackBranch }) {
+  if (!branch.prNumber) {
+    return <span className="pr pr--none">no PR</span>;
+  }
+  if (!branch.prUrl) {
+    return <span className="pr">#{branch.prNumber}</span>;
+  }
+  return (
+    <button
+      type="button"
+      className="pr pr--link"
+      title={branch.prTitle ?? `Open pull request #${branch.prNumber}`}
+      // Stop the row's drag sensor and dblclick-to-checkout from claiming this.
+      onPointerDown={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        vscodeApi.postMessage({ type: 'openUrl', url: branch.prUrl! });
+      }}
+    >
+      #{branch.prNumber}
+    </button>
+  );
+}
+
 interface RowProps {
   branch: StackBranch;
   draggable: boolean;
   moved: boolean;
   colorIndex: number;
+  /** Move this row one position; `null` when the direction is unavailable. */
+  onNudge?: (delta: number) => void;
+  onCheckout?: () => void;
 }
 
-function BranchRow({ branch, draggable, moved, colorIndex }: RowProps) {
+function BranchRow({ branch, draggable, moved, colorIndex, onNudge, onCheckout }: RowProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: branch.name,
     disabled: !draggable,
@@ -97,16 +142,25 @@ function BranchRow({ branch, draggable, moved, colorIndex }: RowProps) {
       ]
         .filter(Boolean)
         .join(' ')}
+      title={onCheckout ? `${branch.name} — double-click to check out` : branch.name}
+      onDoubleClick={onCheckout}
+      // Alt+arrows are the discoverable alternative to dnd-kit's own
+      // space-then-arrows keyboard drag, which needs the row focused first.
+      onKeyDown={(event) => {
+        if (!onNudge || !event.altKey) {
+          return;
+        }
+        if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+          event.preventDefault();
+          onNudge(event.key === 'ArrowUp' ? -1 : 1);
+        }
+      }}
       {...attributes}
       {...listeners}
     >
       <Node index={colorIndex} />
       <span className="name">{branch.name}</span>
-      {branch.prNumber ? (
-        <span className="pr">#{branch.prNumber}</span>
-      ) : (
-        <span className="pr pr--none">no PR</span>
-      )}
+      <PrTag branch={branch} />
       {badges.map((b) => (
         <span key={b} className={`badge badge--${b.replace(/\s+/g, '-')}`}>
           {b}
@@ -145,6 +199,112 @@ function StackColumn({
       </div>
       {branches.length === 0 && <p className="empty">No branches.</p>}
     </section>
+  );
+}
+
+/**
+ * Branches that could join the stack, and branches dragged out of it.
+ *
+ * A drop target in its own right, so removing a branch is the same gesture as
+ * adding one. Rendered full width below the columns rather than as a third
+ * column — the two existing ones already collapse to one at 420px.
+ */
+function Tray({
+  names,
+  candidates,
+  byName,
+  enabled,
+  leaving,
+}: {
+  names: string[];
+  candidates: Map<string, CandidateBranch>;
+  byName: Map<string, StackBranch>;
+  enabled: boolean;
+  leaving: Set<string>;
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id: TRAY_ID, disabled: !enabled });
+
+  return (
+    <section className="tray">
+      <h2 className="column__title">Available</h2>
+      <SortableContext items={names} strategy={verticalListSortingStrategy}>
+        <ul
+          ref={setNodeRef}
+          className={`tray__list ${isOver ? 'tray__list--over' : ''} ${
+            names.length === 0 ? 'tray__list--empty' : ''
+          }`}
+        >
+          {names.map((name) => (
+            <TrayRow
+              key={name}
+              name={name}
+              candidate={candidates.get(name)}
+              branch={byName.get(name)}
+              draggable={enabled}
+              leaving={leaving.has(name)}
+            />
+          ))}
+          {names.length === 0 && (
+            <li className="tray__hint">
+              {enabled
+                ? 'No other local branches. Drag a branch here to remove it from the stack.'
+                : 'No other local branches.'}
+            </li>
+          )}
+        </ul>
+      </SortableContext>
+    </section>
+  );
+}
+
+function TrayRow({
+  name,
+  candidate,
+  branch,
+  draggable,
+  leaving,
+}: {
+  name: string;
+  candidate?: CandidateBranch;
+  branch?: StackBranch;
+  draggable: boolean;
+  leaving: boolean;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: name,
+    disabled: !draggable,
+  });
+
+  const count = candidate?.commitCount;
+
+  return (
+    <li
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={[
+        'candidate',
+        draggable ? 'candidate--draggable' : '',
+        isDragging ? 'candidate--dragging' : '',
+        leaving ? 'candidate--leaving' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+      {...attributes}
+      {...listeners}
+    >
+      <span className="candidate__dot" aria-hidden="true" />
+      <span className="name">{name}</span>
+      {leaving ? (
+        <span className="badge badge--leaving">un-stacking</span>
+      ) : (
+        count !== undefined && (
+          <span className="candidate__count">
+            {count} commit{count === 1 ? '' : 's'}
+          </span>
+        )
+      )}
+      {branch?.prNumber && <PrTag branch={branch} />}
+    </li>
   );
 }
 
@@ -189,7 +349,13 @@ function ApplyPanel({
         <ul className="conflicts">
           {progress.conflictFiles.map((file) => (
             <li key={file}>
-              <code>{file}</code>
+              <button
+                type="button"
+                className="conflicts__file"
+                onClick={() => vscodeApi.postMessage({ type: 'openFile', path: file })}
+              >
+                <code>{file}</code>
+              </button>
             </li>
           ))}
         </ul>
@@ -234,6 +400,9 @@ function ApplyPanel({
                 Roll back
               </button>
             )}
+            <button type="button" onClick={() => vscodeApi.postMessage({ type: 'showLog' })}>
+              Show log
+            </button>
             <button type="button" onClick={onDismiss}>
               Dismiss
             </button>
@@ -326,6 +495,11 @@ export function App() {
   const [appliedPlan, setAppliedPlan] = useState<Plan | null>(null);
   /** Proposed order, in display (top-down) order. */
   const [displayOrder, setDisplayOrder] = useState<string[]>([]);
+  /** Branches parked outside the stack: unstacked candidates plus removals. */
+  const [trayOrder, setTrayOrder] = useState<string[]>([]);
+  const [candidates, setCandidates] = useState<CandidateBranch[]>([]);
+  const [canPublish, setCanPublish] = useState(false);
+  const [dragging, setDragging] = useState<string | null>(null);
 
   const sensors = useSensors(
     // A small activation distance keeps clicks from registering as drags.
@@ -344,11 +518,14 @@ export function App() {
         setLoading(false);
         setResult(message.result);
         setPlan(null);
+        setCandidates(message.candidates);
+        setCanPublish(message.canPublish);
         setDisplayOrder(
           message.result.kind === 'ok'
             ? toDisplayOrder(message.result.stack.branches.map((b) => b.name))
             : [],
         );
+        setTrayOrder(message.candidates.map((c) => c.name));
         // Note: apply progress deliberately survives a refresh. A finished
         // local apply triggers one, and its result — plus the push button —
         // has to outlive it.
@@ -379,6 +556,11 @@ export function App() {
     [stack],
   );
 
+  const candidatesByName = useMemo(
+    () => new Map(candidates.map((c) => [c.name, c])),
+    [candidates],
+  );
+
   const currentDisplay = useMemo(
     () => toDisplayOrder((stack?.branches ?? []).map((b) => b.name)),
     [stack],
@@ -390,38 +572,124 @@ export function App() {
     [currentDisplay],
   );
 
+  /** Branches in the tray that the stack currently holds — i.e. being removed. */
+  const leaving = useMemo(
+    () => new Set(trayOrder.filter((n) => byName.has(n))),
+    [trayOrder, byName],
+  );
+
   const movedNames = useMemo(() => {
     const moved = new Set<string>();
     displayOrder.forEach((name, i) => {
-      if (currentDisplay[i] !== name) {
+      // A branch joining the stack is a change by definition, wherever it sits.
+      if (currentDisplay[i] !== name || !byName.has(name)) {
         moved.add(name);
       }
     });
     return moved;
-  }, [displayOrder, currentDisplay]);
+  }, [displayOrder, currentDisplay, byName]);
+
+  /**
+   * A synthetic StackBranch for a candidate, so tray branches dropped into the
+   * stack render through the same row component as everything else.
+   */
+  const rowFor = useCallback(
+    (name: string): StackBranch =>
+      byName.get(name) ?? {
+        name,
+        base: candidatesByName.get(name)?.base ?? '',
+        isCurrent: false,
+        isMerged: false,
+        isQueued: false,
+        needsRebase: false,
+      },
+    [byName, candidatesByName],
+  );
+
+  /** Push the proposed order to the host, which recomputes the plan. */
+  const submitOrder = useCallback((nextDisplay: string[]) => {
+    vscodeApi.postMessage({ type: 'reorder', order: toModelOrder(nextDisplay) });
+  }, []);
 
   const onDragEnd = useCallback(
     (event: DragEndEvent) => {
+      setDragging(null);
       const { active, over } = event;
-      if (!over || active.id === over.id) {
+      if (!over) {
         return;
       }
-      const from = displayOrder.indexOf(String(active.id));
-      const to = displayOrder.indexOf(String(over.id));
-      if (from < 0 || to < 0) {
+
+      const id = String(active.id);
+      const overId = String(over.id);
+      const fromStack = displayOrder.indexOf(id);
+      const inStack = fromStack >= 0;
+      // `over` is either a row (drop next to it) or the tray's own droppable
+      // (dropped on empty space in it).
+      const toTray = overId === TRAY_ID || trayOrder.includes(overId);
+
+      if (inStack && toTray) {
+        // Leaving the stack.
+        const nextStack = displayOrder.filter((n) => n !== id);
+        const at = overId === TRAY_ID ? trayOrder.length : trayOrder.indexOf(overId);
+        const nextTray = [...trayOrder];
+        nextTray.splice(at, 0, id);
+        setDisplayOrder(nextStack);
+        setTrayOrder(nextTray);
+        submitOrder(nextStack);
+        return;
+      }
+
+      if (!inStack && !toTray) {
+        // Joining the stack, at the position it was dropped on.
+        const at = displayOrder.indexOf(overId);
+        const nextStack = [...displayOrder];
+        nextStack.splice(at < 0 ? nextStack.length : at, 0, id);
+        setTrayOrder(trayOrder.filter((n) => n !== id));
+        setDisplayOrder(nextStack);
+        submitOrder(nextStack);
+        return;
+      }
+
+      if (inStack) {
+        const to = displayOrder.indexOf(overId);
+        if (to < 0 || to === fromStack) {
+          return;
+        }
+        const next = arrayMove(displayOrder, fromStack, to);
+        setDisplayOrder(next);
+        submitOrder(next);
+        return;
+      }
+
+      // Reordering inside the tray: purely cosmetic, no plan change.
+      const from = trayOrder.indexOf(id);
+      const to = trayOrder.indexOf(overId);
+      if (from >= 0 && to >= 0 && from !== to) {
+        setTrayOrder(arrayMove(trayOrder, from, to));
+      }
+    },
+    [displayOrder, trayOrder, submitOrder],
+  );
+
+  const nudge = useCallback(
+    (name: string, delta: number) => {
+      const from = displayOrder.indexOf(name);
+      const to = from + delta;
+      if (from < 0 || to < 0 || to >= displayOrder.length) {
         return;
       }
       const next = arrayMove(displayOrder, from, to);
       setDisplayOrder(next);
-      vscodeApi.postMessage({ type: 'reorder', order: toModelOrder(next) });
+      submitOrder(next);
     },
-    [displayOrder],
+    [displayOrder, submitOrder],
   );
 
   const reset = useCallback(() => {
     setDisplayOrder(currentDisplay);
+    setTrayOrder(candidates.map((c) => c.name));
     setPlan(null);
-  }, [currentDisplay]);
+  }, [currentDisplay, candidates]);
 
   const apply = useCallback(() => {
     if (!plan || plan.isNoop) {
@@ -466,10 +734,15 @@ export function App() {
 
   // gh-stack refuses to insert next to a merged branch, so we don't offer it.
   const hasMerged = stack.branches.some((b) => b.isMerged);
-  const dirty = displayOrder.some((n, i) => currentDisplay[i] !== n);
+  const dirty =
+    displayOrder.length !== currentDisplay.length ||
+    displayOrder.some((n, i) => currentDisplay[i] !== n);
   // Reordering mid-apply would desync the plan from the repository state the
   // runner is partway through rewriting.
   const busy = progress?.phase === 'running' || progress?.phase === 'conflict';
+  const editable = !hasMerged && !busy;
+  /** Branches leaving the stack that already have a PR open against a parent. */
+  const leavingWithPrs = [...leaving].filter((n) => byName.get(n)?.prNumber);
 
   return (
     <div className="app">
@@ -484,6 +757,19 @@ export function App() {
         <button type="button" onClick={reset} disabled={!dirty || busy}>
           Reset
         </button>
+        <button
+          type="button"
+          className="publish toolbar__publish"
+          onClick={() => vscodeApi.postMessage({ type: 'pushSubmit' })}
+          disabled={!canPublish || busy}
+          title={
+            canPublish
+              ? 'Run gh stack push, then gh stack submit --auto, for the stack as it is on disk now'
+              : 'No origin remote to push to'
+          }
+        >
+          Push &amp; submit
+        </button>
       </div>
 
       {hasMerged && (
@@ -493,50 +779,79 @@ export function App() {
         </p>
       )}
 
-      <div className="columns">
-        <StackColumn title="Current" trunk={stack.trunk} branches={stack.branches}>
-          {currentDisplay.map((name, i) => {
-            const branch = byName.get(name);
-            return branch ? (
-              <li key={name} className={`row row--static ${branch.isCurrent ? 'row--current' : ''}`}>
-                <Node index={i} />
-                <span className="name">{branch.name}</span>
-                {branch.prNumber && <span className="pr">#{branch.prNumber}</span>}
-              </li>
-            ) : null;
-          })}
-        </StackColumn>
+      {leavingWithPrs.length > 0 && (
+        <p className="warn">
+          {leavingWithPrs.join(', ')} {leavingWithPrs.length === 1 ? 'has' : 'have'} an open
+          PR. Removing {leavingWithPrs.length === 1 ? 'it' : 'them'} from the stack leaves that
+          PR targeting a base that is no longer its parent — `gh stack submit` will not
+          retarget it once it is out of the stack. Retarget or close it on GitHub.
+        </p>
+      )}
 
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        onDragStart={(event: DragStartEvent) => setDragging(String(event.active.id))}
+        onDragCancel={() => setDragging(null)}
+        onDragEnd={onDragEnd}
+      >
+        <div className="columns">
+          <StackColumn title="Current" trunk={stack.trunk} branches={stack.branches}>
+            {currentDisplay.map((name, i) => {
+              const branch = byName.get(name);
+              return branch ? (
+                <li key={name} className={`row row--static ${branch.isCurrent ? 'row--current' : ''}`}>
+                  <Node index={i} />
+                  <span className="name">{branch.name}</span>
+                  {branch.prNumber && <PrTag branch={branch} />}
+                </li>
+              ) : null;
+            })}
+          </StackColumn>
+
           <StackColumn title="Proposed" trunk={stack.trunk} branches={stack.branches}>
             <SortableContext items={displayOrder} strategy={verticalListSortingStrategy}>
-              {displayOrder.map((name) => {
-                const branch = byName.get(name);
-                return branch ? (
-                  <BranchRow
-                    key={name}
-                    branch={branch}
-                    draggable={!hasMerged && !busy}
-                    moved={movedNames.has(name)}
-                    colorIndex={colorIndexByName.get(name) ?? 0}
-                  />
-                ) : null;
-              })}
+              {displayOrder.map((name) => (
+                <BranchRow
+                  key={name}
+                  branch={rowFor(name)}
+                  draggable={editable}
+                  moved={movedNames.has(name)}
+                  colorIndex={colorIndexByName.get(name) ?? currentDisplay.length}
+                  onNudge={editable ? (delta) => nudge(name, delta) : undefined}
+                  onCheckout={
+                    busy ? undefined : () => vscodeApi.postMessage({ type: 'checkout', branch: name })
+                  }
+                />
+              ))}
             </SortableContext>
           </StackColumn>
-        </DndContext>
-      </div>
+        </div>
+
+        <Tray
+          names={trayOrder}
+          candidates={candidatesByName}
+          byName={byName}
+          enabled={editable}
+          leaving={leaving}
+        />
+
+        {/* Keeps the lifted row legible as it crosses between containers. */}
+        <DragOverlay>
+          {dragging ? (
+            <div className="row row--overlay">
+              <Node index={colorIndexByName.get(dragging) ?? currentDisplay.length} />
+              <span className="name">{dragging}</span>
+            </div>
+          ) : null}
+        </DragOverlay>
+      </DndContext>
 
       <PlanView
         plan={
           // appliedPlan is null when the host replays a session this webview
           // never started, so fall back to the plan it replayed alongside it.
-          (progress ? (appliedPlan ?? plan) : plan) ?? {
-            steps: [],
-            proposedOrder: [],
-            isNoop: true,
-            mergedBranches: [],
-          }
+          (progress ? (appliedPlan ?? plan) : plan) ?? EMPTY_PLAN
         }
         progress={progress}
         onCopy={(text) => vscodeApi.postMessage({ type: 'copyPlan', text })}

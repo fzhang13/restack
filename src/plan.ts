@@ -1,4 +1,4 @@
-import type { Plan, PlanStep, Stack } from './model.ts';
+import type { CandidateBranch, Plan, PlanStep, Stack } from './model.ts';
 
 /** Short SHA for display; plans still carry the full SHA in the command. */
 export function shortSha(sha: string): string {
@@ -22,45 +22,91 @@ export function shortSha(sha: string): string {
  * Steps carry both a display string and an `exec` argv. Apply runs the argv, so
  * what the panel shows is always what runs — no shell parsing in between, and
  * no chance of the two drifting apart.
+ *
+ * `proposedOrder` may also add branches (drawn from `candidates`) and drop ones
+ * the stack currently holds. A dropped branch is rebased back onto trunk, which
+ * detaches it from the stack without discarding its commits.
  */
-export function computePlan(stack: Stack, proposedOrder: string[]): Plan {
+export function computePlan(
+  stack: Stack,
+  proposedOrder: string[],
+  candidates: CandidateBranch[] = [],
+): Plan {
   const currentOrder = stack.branches.map((b) => b.name);
   const byName = new Map(stack.branches.map((b) => [b.name, b]));
 
+  // Every anchor in one place: gh-stack's recorded base for stacked branches,
+  // the merge-base with trunk for candidates. Both are pre-rebase SHAs, which
+  // is the only property the cascade depends on.
+  const baseOf = new Map<string, string>();
+  for (const branch of stack.branches) {
+    baseOf.set(branch.name, branch.base);
+  }
+  for (const candidate of candidates) {
+    if (!baseOf.has(candidate.name)) {
+      baseOf.set(candidate.name, candidate.base);
+    }
+  }
+
   const mergedBranches = stack.branches.filter((b) => b.isMerged).map((b) => b.name);
+  const proposedSet = new Set(proposedOrder);
+  const insertedBranches = proposedOrder.filter((n) => !byName.has(n));
+  const removedBranches = currentOrder.filter((n) => !proposedSet.has(n));
 
   const isNoop =
+    insertedBranches.length === 0 &&
+    removedBranches.length === 0 &&
     proposedOrder.length === currentOrder.length &&
     proposedOrder.every((name, i) => name === currentOrder[i]);
 
   if (isNoop) {
-    return { steps: [], proposedOrder, isNoop, mergedBranches };
+    return { steps: [], proposedOrder, isNoop, mergedBranches, insertedBranches, removedBranches };
   }
 
   const steps: PlanStep[] = [];
 
+  // Removals first, so the cascade below runs against a stack that already has
+  // the departing branches out of the way. Each is anchored to its own recorded
+  // base, so these stay independent of each other and of what follows.
+  for (const name of removedBranches) {
+    const oldBase = baseOf.get(name) ?? stack.trunk;
+    const args = ['rebase', '--onto', stack.trunk, oldBase, name];
+    steps.push({
+      kind: 'rebase',
+      branch: name,
+      command: `git ${args.join(' ')}`,
+      exec: { file: 'git', args },
+      note: `Detach ${name} from the stack, replaying it onto ${stack.trunk}. Its commits are kept.`,
+    });
+  }
+
   // Bottom-up: each branch is rebased onto whatever now sits beneath it.
+  //
+  // Once one branch replays, its tip SHA changes, so everything above it has to
+  // replay too even if its parent is still called the same thing. Tracking that
+  // as a running flag is what makes this exact: a branch is skipped only when
+  // its parent is unchanged *and* nothing beneath it was rewritten. A removal
+  // above a branch, for instance, leaves it entirely alone.
+  let rewrittenBelow = false;
+
   proposedOrder.forEach((name, index) => {
-    const branch = byName.get(name);
-    if (!branch) {
-      return;
+    const oldBase = baseOf.get(name);
+    if (oldBase === undefined) {
+      return; // Neither stacked nor a known candidate: no anchor to replay from.
     }
 
     const newBaseRef = index === 0 ? stack.trunk : proposedOrder[index - 1];
-    const oldBase = branch.base;
     const currentIndex = currentOrder.indexOf(name);
     const previousBaseRef = currentIndex === 0 ? stack.trunk : currentOrder[currentIndex - 1];
 
-    // Skip branches whose parent is unchanged — but only when nothing below
-    // them moved, since a rewritten ancestor forces a replay regardless.
-    const parentUnchanged = newBaseRef === previousBaseRef;
-    const ancestorsMoved = proposedOrder
-      .slice(0, index)
-      .some((n) => currentOrder.indexOf(n) !== proposedOrder.indexOf(n));
+    // A branch joining the stack always replays: it has never sat here.
+    const isInserted = currentIndex < 0;
+    const parentUnchanged = !isInserted && newBaseRef === previousBaseRef;
 
-    if (parentUnchanged && !ancestorsMoved) {
+    if (parentUnchanged && !rewrittenBelow) {
       return;
     }
+    rewrittenBelow = true;
 
     const args = ['rebase', '--onto', newBaseRef, oldBase, name];
     steps.push({
@@ -69,14 +115,12 @@ export function computePlan(stack: Stack, proposedOrder: string[]): Plan {
       command: `git ${args.join(' ')}`,
       exec: { file: 'git', args },
       note: oldBase
-        ? `Replay ${name} onto ${newBaseRef}, taking commits after ${shortSha(oldBase)}.`
+        ? `${isInserted ? 'Add' : 'Replay'} ${name} onto ${newBaseRef}, taking commits after ${shortSha(oldBase)}.`
         : `Replay ${name} onto ${newBaseRef}.`,
     });
   });
 
   if (steps.length > 0) {
-    const touched = steps.filter((s) => s.kind === 'rebase').map((s) => s.branch!);
-
     // Rendered as a shell comment so the plan stays pasteable, but it is a real
     // step: rebasing alone leaves .git/gh-stack describing the old order, and
     // `gh stack submit` would then retarget PR bases from stale data. Anyone
@@ -88,23 +132,43 @@ export function computePlan(stack: Stack, proposedOrder: string[]): Plan {
       note: 'Rebasing does not update gh-stack’s own state file. Without this, `gh stack view` reports the old order and submit retargets the wrong bases.',
     });
 
-    const pushArgs = ['push', '--force-with-lease', 'origin', ...touched];
-    steps.push({
-      kind: 'push',
-      command: `git ${pushArgs.join(' ')}`,
-      exec: { file: 'git', args: pushArgs },
-      note: 'force-with-lease refuses to clobber commits you have not seen.',
-    });
+    steps.push(...publishSteps());
+  }
 
-    // --auto skips the interactive editor, which cannot run from a webview.
-    const submitArgs = ['stack', 'submit', '--auto'];
-    steps.push({
+  return { steps, proposedOrder, isNoop, mergedBranches, insertedBranches, removedBranches };
+}
+
+/**
+ * The remote half: push, then submit.
+ *
+ * `gh stack push` does per-branch `--force-with-lease` itself and skips merged
+ * and queued branches, so it replaces a hand-rolled `git push` over a branch
+ * list — which would have to reproduce those rules and would drift when
+ * gh-stack changes them. It reads the branch list from `.git/gh-stack`, so it
+ * must run after the metadata write.
+ *
+ * Pushing before submitting is not redundant even though submit pushes too: a
+ * rejected lease surfaces here, before any PR base has been retargeted.
+ *
+ * Shared with the standalone Push & Submit action, which runs these two steps
+ * with no reorder in front of them.
+ */
+export function publishSteps(): PlanStep[] {
+  const pushArgs = ['stack', 'push'];
+  const submitArgs = ['stack', 'submit', '--auto'];
+  return [
+    {
+      kind: 'push',
+      command: `gh ${pushArgs.join(' ')}`,
+      exec: { file: 'gh', args: pushArgs },
+      note: 'Per-branch --force-with-lease, refusing to clobber commits you have not seen. Merged and queued branches are skipped.',
+    },
+    {
+      // --auto skips the interactive editor, which cannot run from a webview.
       kind: 'submit',
       command: `gh ${submitArgs.join(' ')}`,
       exec: { file: 'gh', args: submitArgs },
       note: 'Retargets each PR base and updates the stack on GitHub. --auto skips the interactive editor.',
-    });
-  }
-
-  return { steps, proposedOrder, isNoop, mergedBranches };
+    },
+  ];
 }

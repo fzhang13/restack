@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parseStack } from '../src/parse.ts';
 import { computePlan } from '../src/plan.ts';
+import type { CandidateBranch } from '../src/model.ts';
 
 /** Captured from a real `gh stack view --json` run (gh-stack v0.1.0). */
 const fixture = readFileSync(new URL('../fixtures/stack-no-prs.json', import.meta.url), 'utf8');
@@ -94,16 +95,23 @@ test('moving the bottom branch to the top replays the whole stack', () => {
   anchors.forEach((a) => assert.match(a, /^[0-9a-f]{40}$/));
 });
 
-test('plan ends with metadata, force-with-lease push, then submit', () => {
+test('plan ends with metadata, push, then submit', () => {
   const stack = parseStack(fixture);
   const plan = computePlan(stack, ['feat/auth', 'feat/ui', 'feat/api']);
   const kinds = plan.steps.map((s) => s.kind);
   assert.deepEqual(kinds.slice(-3), ['metadata', 'push', 'submit']);
 
-  const push = plan.steps.at(-2)!;
-  assert.match(push.command, /--force-with-lease/);
+  // `gh stack push` does per-branch --force-with-lease itself and skips merged
+  // and queued branches — rules a hand-rolled `git push` would have to
+  // reproduce and would drift from.
+  assert.equal(plan.steps.at(-2)!.command, 'gh stack push');
   // --auto is required: the interactive editor cannot run from a webview.
   assert.equal(plan.steps.at(-1)!.command, 'gh stack submit --auto');
+
+  // Push must follow the metadata write: gh-stack reads its branch list from
+  // that file, so pushing first would push the pre-reorder set.
+  const metadata = kinds.indexOf('metadata');
+  assert.ok(metadata < kinds.indexOf('push'));
 });
 
 test('the metadata step is a shell comment, so copied plans stay pasteable', () => {
@@ -140,4 +148,102 @@ test('reports merged branches so the UI can refuse to reorder them', () => {
   stack.branches[0].isMerged = true;
   const plan = computePlan(stack, ['feat/auth', 'feat/ui', 'feat/api']);
   assert.deepEqual(plan.mergedBranches, ['feat/auth']);
+});
+
+/** A branch outside the stack, as candidates.ts would report it. */
+const SPIKE: CandidateBranch = {
+  name: 'spike',
+  base: 'f'.repeat(40),
+  commitCount: 2,
+};
+
+test('inserting a branch anchors it to its merge-base with trunk', () => {
+  const stack = parseStack(fixture);
+  const [auth, api, ui] = stack.branches;
+
+  // spike slots between auth and api.
+  const plan = computePlan(stack, ['feat/auth', 'spike', 'feat/api', 'feat/ui'], [SPIKE]);
+
+  assert.equal(plan.isNoop, false);
+  assert.deepEqual(plan.insertedBranches, ['spike']);
+  assert.deepEqual(plan.removedBranches, []);
+
+  const rebases = plan.steps.filter((s) => s.kind === 'rebase');
+  // auth is untouched: it still sits on trunk with nothing moved beneath it.
+  assert.deepEqual(rebases.map((s) => s.branch), ['spike', 'feat/api', 'feat/ui']);
+
+  // The candidate's merge-base stands in for a gh-stack recorded base, and is
+  // used exactly the same way — as the upstream anchor.
+  assert.equal(rebases[0].command, `git rebase --onto feat/auth ${SPIKE.base} spike`);
+  // Everything above the insertion replays from its OWN recorded SHA, not from
+  // the rewritten ref below it.
+  assert.equal(rebases[1].command, `git rebase --onto spike ${api.base} feat/api`);
+  assert.equal(rebases[2].command, `git rebase --onto feat/api ${ui.base} feat/ui`);
+  assert.notEqual(auth.base, api.base);
+});
+
+test('inserting at the bottom rebases the new branch onto trunk', () => {
+  const stack = parseStack(fixture);
+  const plan = computePlan(stack, ['spike', 'feat/auth', 'feat/api', 'feat/ui'], [SPIKE]);
+  const rebases = plan.steps.filter((s) => s.kind === 'rebase');
+
+  assert.equal(rebases[0].command, `git rebase --onto main ${SPIKE.base} spike`);
+  // The whole stack sits on spike now, so every branch replays.
+  assert.deepEqual(rebases.map((s) => s.branch), ['spike', 'feat/auth', 'feat/api', 'feat/ui']);
+});
+
+test('removing a branch replays it onto trunk and closes the gap', () => {
+  const stack = parseStack(fixture);
+  const [auth, api, ui] = stack.branches;
+
+  // feat/api leaves; auth and ui stay in order.
+  const plan = computePlan(stack, ['feat/auth', 'feat/ui']);
+
+  assert.equal(plan.isNoop, false);
+  assert.deepEqual(plan.removedBranches, ['feat/api']);
+  assert.deepEqual(plan.insertedBranches, []);
+
+  const rebases = plan.steps.filter((s) => s.kind === 'rebase');
+  // The removal comes first, so the cascade runs against a stack already
+  // missing the departing branch.
+  assert.equal(rebases[0].command, `git rebase --onto main ${api.base} feat/api`);
+  // feat/ui closes the gap onto auth. Its anchor is still its own recorded SHA.
+  assert.equal(rebases.at(-1)!.command, `git rebase --onto feat/auth ${ui.base} feat/ui`);
+  // Its commits are kept, not dropped — that has to be legible in the UI.
+  assert.match(rebases[0].note!, /commits are kept/i);
+  assert.equal(auth.base.length, 40);
+});
+
+test('a branch above a removal replays even though its parent name is unchanged', () => {
+  const stack = parseStack(fixture);
+  // Drop the top branch. auth and api keep both their order and their parents.
+  const plan = computePlan(stack, ['feat/auth', 'feat/api']);
+  const rebases = plan.steps.filter((s) => s.kind === 'rebase');
+
+  // Only the departing branch needs rewriting here; the survivors are already
+  // sitting exactly where the proposed order puts them.
+  assert.deepEqual(rebases.map((s) => s.branch), ['feat/ui']);
+  assert.deepEqual(plan.removedBranches, ['feat/ui']);
+});
+
+test('membership changes count as changes even when the shared order matches', () => {
+  const stack = parseStack(fixture);
+  const same = ['feat/auth', 'feat/api', 'feat/ui'];
+
+  assert.equal(computePlan(stack, same).isNoop, true);
+  // Appending or dropping a branch is a real change, though every branch the
+  // two orders share is still in the same relative position.
+  assert.equal(computePlan(stack, [...same, 'spike'], [SPIKE]).isNoop, false);
+  assert.equal(computePlan(stack, same.slice(0, 2)).isNoop, false);
+});
+
+test('a branch with no known base is skipped rather than rebased blindly', () => {
+  const stack = parseStack(fixture);
+  // 'ghost' is in neither the stack nor the candidate list, so there is no
+  // recorded SHA to anchor it — emitting a rebase would guess at the range.
+  const plan = computePlan(stack, ['feat/auth', 'ghost', 'feat/api', 'feat/ui']);
+  const rebases = plan.steps.filter((s) => s.kind === 'rebase');
+
+  assert.ok(!rebases.some((s) => s.branch === 'ghost'));
+  assert.deepEqual(plan.insertedBranches, ['ghost']);
 });

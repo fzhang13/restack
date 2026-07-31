@@ -41,6 +41,20 @@ export interface Stack {
 }
 
 /**
+ * A local branch outside the stack that can be dragged into it.
+ *
+ * `base` is a merge-base with trunk rather than something gh-stack recorded —
+ * see candidates.ts — but it means the same thing to plan.ts, so an inserted
+ * branch anchors its rebase exactly like a stacked one.
+ */
+export interface CandidateBranch {
+  name: string;
+  base: string;
+  /** Commits in `trunk..branch`, so an empty branch is visible in the tray. */
+  commitCount: number;
+}
+
+/**
  * How a step is executed. `command` is display only; `exec` is what actually
  * runs, so the two can never drift. `file` is a token rather than a path
  * because `gh` resolves against the `restack.ghPath` setting at run time.
@@ -102,6 +116,10 @@ export interface Plan {
    * branch is refused: gh-stack itself rejects inserting next to one.
    */
   mergedBranches: string[];
+  /** Branches joining the stack, in proposed order. */
+  insertedBranches: string[];
+  /** Branches leaving the stack, rebased back onto trunk. */
+  removedBranches: string[];
 }
 
 /** Discriminated result of reading the stack, so the UI can render each case. */
@@ -114,7 +132,14 @@ export type StackResult =
 
 /** Messages: extension host -> webview. */
 export type HostMessage =
-  | { type: 'stack'; result: StackResult }
+  | {
+      type: 'stack';
+      result: StackResult;
+      /** Local branches outside the stack, offered in the tray. */
+      candidates: CandidateBranch[];
+      /** Whether there is an `origin` to push to; gates Push & Submit. */
+      canPublish: boolean;
+    }
   | { type: 'plan'; plan: Plan }
   | { type: 'loading' }
   | { type: 'apply'; progress: ApplyProgress }
@@ -130,7 +155,14 @@ export type WebviewMessage =
   | { type: 'apply'; order: string[] }
   /** Run push + submit against an already-applied local reorder. */
   | { type: 'publish' }
+  /** Push + submit with no apply session — the standalone toolbar action. */
+  | { type: 'pushSubmit' }
   | { type: 'applyContinue' }
   | { type: 'applyAbort' }
   | { type: 'applyUndo' }
-  | { type: 'applyDismiss' };
+  | { type: 'applyDismiss' }
+  | { type: 'openUrl'; url: string }
+  /** Workspace-relative path of a conflicted file to open in the editor. */
+  | { type: 'openFile'; path: string }
+  | { type: 'checkout'; branch: string }
+  | { type: 'showLog' };

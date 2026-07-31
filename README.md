@@ -21,6 +21,23 @@ Restack computes the plan itself and shows it to you before anything runs.
 4. Recomputes the plan on every drop.
 5. **Apply** runs the plan, pausing on conflicts.
 
+### Adding and removing branches
+
+Below the stack, **Available** lists the repo's other local branches — every
+`refs/heads` entry that is not trunk, not already stacked, and not fully merged
+into trunk. Drag one onto the stack at any position to insert it; drag a stacked
+branch down into the tray to take it out.
+
+A branch gh-stack has never seen has no recorded base, so Restack uses
+`git merge-base <branch> <trunk>` as the anchor. That is the same kind of value
+as gh-stack's own `base` — a pre-rebase SHA — so an inserted branch replays
+exactly like a stacked one, and the recorded-SHA rule below applies unchanged.
+
+Un-stacking rebases the branch back onto trunk rather than discarding anything:
+its commits survive, it just stops being part of the stack. If it already has a
+PR, the panel says so — that PR keeps pointing at a base that is no longer its
+parent, and `gh stack submit` will not retarget a branch it no longer tracks.
+
 ### Applying
 
 Apply is split in two, and the halves are not equally recoverable.
@@ -30,14 +47,30 @@ first rebase, Restack records every branch SHA and the verbatim bytes of the
 metadata file; *Undo* restores both. It refuses to start over a dirty worktree,
 mid-rebase, or on a stack with merged branches.
 
-The **remote half** is the force-push and `gh stack submit`. It takes its own
-confirmation even if you chose "Apply & Publish" up front, and once it runs,
+The **remote half** is `gh stack push` and `gh stack submit --auto`. It takes its
+own confirmation even if you chose "Apply & Publish" up front, and once it runs,
 Undo is withdrawn rather than offered and quietly useless. Without an `origin`
 remote that button is not offered at all — preflight refuses the *whole* apply
 on an impossible scope, so offering it would cost you the local reorder too.
 
+`gh stack push` rather than a hand-rolled `git push --force-with-lease`: it does
+the per-branch lease itself and skips merged and queued branches, rules that
+would otherwise have to be reproduced here and would drift as gh-stack changes
+them. It reads its branch list from `.git/gh-stack`, so it has to run *after*
+the metadata write. Pushing before submitting is not redundant even though
+submit pushes too — a rejected lease surfaces before any PR base is retargeted.
+
 On a conflict the rebase pauses in place. Resolve the listed files, stage them,
 and hit *Continue*; or *Abort* to roll everything back.
+
+### Publishing without a reorder
+
+Push & Submit is also a toolbar button and a command (`Restack: Push & Submit
+Stack`), independent of any apply session. Reorder and dismiss the panel, reload
+the window, land the reorder some other way — the branches are still sitting
+there rebased and unpushed, and this is the route to origin. It runs the same
+two steps through the same progress UI, with Undo correctly unavailable: there
+is no local snapshot behind it because nothing local was rewritten.
 
 ### Why Restack writes `.git/gh-stack`
 
@@ -66,13 +99,36 @@ SHA directly — its `base` field is already resolved, not a ref name.
 Using a branch *name* as upstream is what breaks. Moving the bottom branch of
 `auth → api → ui` to the top with name-based upstreams produces:
 
-```
+```text
 feat/ui: 070c59b feat: add ui components  144f76f feat: add auth layer  1b42e58 feat: add api routes
 ```
 
 `feat/ui` has silently absorbed auth's commit. With recorded SHAs the same
 reorder yields one commit per branch, correctly. Both outcomes were verified by
 executing the commands against a real repository; see `test/plan.test.ts`.
+
+## Install
+
+**VS Code** — search "Restack" in the Extensions view, or:
+
+```bash
+code --install-extension felixzhang.restack
+```
+
+**Cursor** — Cursor pulls from [Open VSX](https://open-vsx.org), not the VS Code
+Marketplace, so search there or:
+
+```bash
+cursor --install-extension felixzhang.restack
+```
+
+**From a `.vsix`** — for either editor, or for a build that is not published yet.
+Grab one from [Releases](https://github.com/fzhang13/restack/releases), then use
+*Extensions: Install from VSIX…* in the command palette, or:
+
+```bash
+code --install-extension restack-0.1.0.vsix     # or: cursor --install-extension
+```
 
 ## Requirements
 
@@ -90,7 +146,7 @@ npm test           # parser, plan, metadata + apply against real temp repos
 npm run typecheck
 ```
 
-Press <kbd>F5</kbd> in VS Code to launch an Extension Development Host.
+Press **F5** in VS Code to launch an Extension Development Host.
 
 ### Sandbox
 
@@ -127,26 +183,66 @@ npm run build && node test/harness/build-driver.mjs
 open test/harness/index.html
 ```
 
+### Publishing
+
+Two registries, because Cursor cannot install from the VS Code Marketplace —
+its terms restrict it to Microsoft products, so Cursor and the other forks pull
+from [Open VSX](https://open-vsx.org). Publishing to only one leaves half the
+audience out, and the same `.vsix` goes to both.
+
+`vscode:prepublish` runs typecheck, the test suite, and a production build, so
+`vsce package` cannot ship a bundle that does not compile or pass tests.
+
+```bash
+npm run package                 # -> restack-<version>.vsix, inspect before publishing
+npx vsce ls --tree              # exactly what is inside it
+```
+
+One-time setup:
+
+- **Marketplace** — create a publisher at
+  [marketplace.visualstudio.com/manage](https://marketplace.visualstudio.com/manage),
+  then an Azure DevOps PAT scoped to *Marketplace → Manage*, all organizations.
+  `npx vsce login felixzhang`.
+- **Open VSX** — sign in at [open-vsx.org](https://open-vsx.org) with GitHub,
+  sign the publisher agreement, and create an access token. Export it as
+  `OVSX_PAT`.
+
+The publisher name in both must match `publisher` in `package.json`.
+
+```bash
+npm version minor               # bump + tag; update CHANGELOG.md first
+npm run publish:vsce
+npm run publish:ovsx -- --packagePath restack-<version>.vsix
+git push --follow-tags
+```
+
+Publishing the packaged `.vsix` to Open VSX rather than letting it rebuild is
+deliberate: both registries then serve bytes that were tested here.
+
 ## Status
 
 Working:
 
 - Reads and renders the stack, with PR numbers, merged/queued/needs-rebase badges
 - Drag to reorder, with moved rows highlighted
+- Insert an unstacked local branch at any position; drag one out to un-stack it
 - Plan generation, verified against real git
 - Distinct UI for: not on a stack, not a git repo, gh missing, parse failure
 - Reordering disabled when the stack has merged branches — gh-stack rejects
   inserting next to one
-- Executing the plan: rebases, the gh-stack metadata rewrite, force-push, submit
+- Executing the plan: rebases, the gh-stack metadata rewrite, push, submit
+- Push & Submit as a standalone toolbar action, with no apply session
 - Conflict pause / continue / abort, with snapshot-based rollback
 - Dirty-worktree and mid-rebase refusal before anything runs
+- Apply state persisted to `workspaceState`, so a window reload mid-apply comes
+  back with Continue/Abort/Undo live
+- Clickable PR links and conflicted files; `Alt+↑`/`Alt+↓` to reorder a focused
+  row, double-click to check a branch out
+- A **Restack** output channel logging every command, exit code, and full stderr
 
 Not built yet:
 
-- Apply state is held in the extension host, so it survives hiding the panel and
-  is replayed to a webview that reconnects mid-apply — but a *window* reload
-  discards it, stranding the repo mid-plan with no Undo. Persisting to
-  `workspaceState` is the fix.
 - No stash offer on a dirty worktree — Restack refuses and leaves it to you.
 - Multi-root workspace support (reads the first workspace folder only).
 - Push and submit are verified by unit tests and by hand, not end to end in CI —

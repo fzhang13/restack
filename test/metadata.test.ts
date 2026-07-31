@@ -148,6 +148,67 @@ test('stack lookup requires an exact set, not a subset', () => {
   assert.equal(findStackIndex(stacks, ['a']), -1);
 });
 
+test('`match` finds the stack by the names on disk while writing a new set', () => {
+  const NEW_SPIKE = 'd'.repeat(40);
+  // spike joins the stack. The written set is four names; the file still holds
+  // three, so without `match` the lookup could not find the stack at all.
+  const out = JSON.parse(
+    rewriteMetadata(fixture(), {
+      trunk: 'main',
+      trunkHead: NEW_TRUNK,
+      branches: [
+        { branch: 'feat/auth', base: NEW_TRUNK },
+        { branch: 'spike', base: NEW_UI },
+        { branch: 'feat/api', base: NEW_SPIKE },
+        { branch: 'feat/ui', base: NEW_API },
+      ],
+      match: ['feat/auth', 'feat/api', 'feat/ui'],
+    }),
+  );
+
+  assert.deepEqual(
+    out.stacks[0].branches.map((b: { branch: string }) => b.branch),
+    ['feat/auth', 'spike', 'feat/api', 'feat/ui'],
+  );
+  // Unknown keys on branches that were already there still survive.
+  const api = out.stacks[0].branches.find((b: { branch: string }) => b.branch === 'feat/api');
+  assert.equal(api.futureField, 'keep me');
+});
+
+test('`match` also covers a branch leaving the stack', () => {
+  const out = JSON.parse(
+    rewriteMetadata(fixture(), {
+      trunk: 'main',
+      trunkHead: NEW_TRUNK,
+      branches: [
+        { branch: 'feat/auth', base: NEW_TRUNK },
+        { branch: 'feat/ui', base: NEW_API },
+      ],
+      match: ['feat/auth', 'feat/api', 'feat/ui'],
+    }),
+  );
+
+  assert.deepEqual(
+    out.stacks[0].branches.map((b: { branch: string }) => b.branch),
+    ['feat/auth', 'feat/ui'],
+  );
+});
+
+test('`match` still requires an exact set — a wrong one refuses', () => {
+  // The safety property the default relies on has to hold for `match` too,
+  // or a mistyped set could rewrite a different stack that shares names.
+  assert.throws(
+    () =>
+      rewriteMetadata(fixture(), {
+        trunk: 'main',
+        trunkHead: NEW_TRUNK,
+        branches: [{ branch: 'feat/auth', base: NEW_TRUNK }],
+        match: ['feat/auth', 'feat/api'],
+      }),
+    /Could not find this stack/,
+  );
+});
+
 test('basesForOrder chains each branch onto the tip below it', () => {
   const tips = new Map([
     ['feat/api', NEW_API],

@@ -2,16 +2,31 @@
   "name": "restack",
   "displayName": "Restack",
   "description": "Visualize and rearrange GitHub stacked pull requests by drag and drop.",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "publisher": "felixzhang",
-  "private": true,
   "license": "MIT",
+  "icon": "media/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fzhang13/restack.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fzhang13/restack/issues"
+  },
+  "homepage": "https://github.com/fzhang13/restack#readme",
   "engines": {
     "vscode": "^1.90.0"
   },
   "categories": [
     "SCM Providers",
     "Visualization"
+  ],
+  "keywords": [
+    "stacked pull requests",
+    "gh-stack",
+    "git",
+    "rebase",
+    "github"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -41,14 +56,32 @@
         "command": "restack.refresh",
         "title": "Restack: Refresh Stack",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "restack.pushSubmit",
+        "title": "Restack: Push & Submit Stack",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "restack.showLog",
+        "title": "Restack: Show Log"
       }
     ],
     "menus": {
       "view/title": [
         {
+          "command": "restack.pushSubmit",
+          "when": "view == restack.stackView",
+          "group": "navigation@1"
+        },
+        {
           "command": "restack.refresh",
           "when": "view == restack.stackView",
-          "group": "navigation"
+          "group": "navigation@2"
+        },
+        {
+          "command": "restack.showLog",
+          "when": "view == restack.stackView"
         }
       ]
     },
@@ -68,9 +101,14 @@
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types test/*.test.ts",
-    "vscode:prepublish": "npm run build -- --production"
+    "package": "vsce package",
+    "publish:vsce": "vsce publish",
+    "publish:ovsx": "ovsx publish",
+    "vscode:prepublish": "npm run typecheck && npm test && npm run build -- --production"
   },
   "devDependencies": {
+    "@vscode/vsce": "^3.9.0",
+    "ovsx": "^0.10.0",
     "@types/node": "^22.10.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
