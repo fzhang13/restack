@@ -412,6 +412,30 @@ button:disabled {
   opacity: 0.5;
 }
 
+/*
+ * Adding a branch on top. Borrows `.init__row` wholesale rather than restyling
+ * the pair — it is the same control as the builder's, in a stack that already
+ * exists, and it should not look like a different one.
+ */
+.add {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.add__note {
+  margin: 0;
+  padding-left: 78px; /* clears .init__row's label column, so it reads as its caption */
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.add__note code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  color: var(--vscode-textPreformat-foreground);
+  word-break: break-all;
+}
+
 /* The row under the cursor mid-drag. Rebuilt rather than cloned, so it needs
    its own surface — it sits outside both containers. */
 .row--overlay {

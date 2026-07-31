@@ -194,6 +194,12 @@ export type WebviewMessage =
    */
   | { type: 'initStack'; trunk: string; branches: string[] }
   /**
+   * Extend the stack by one branch, on top: `gh stack add <branch>`. Created if
+   * it does not exist, adopted if it does — gh-stack decides, and an adopted
+   * branch arrives flagged `needsRebase` for the drift banner to offer.
+   */
+  | { type: 'addBranch'; branch: string }
+  /**
    * Replay the stack onto itself, resolving the drift gh-stack reports after
    * an init adopts branches without rebasing them.
    */

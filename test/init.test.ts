@@ -4,8 +4,14 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { detectTrunk, initPreflight, readLocalStacks, unstackPreflight } from '../src/init.ts';
-import { initArgs, unstackArgs } from '../src/plan.ts';
+import {
+  addPreflight,
+  detectTrunk,
+  initPreflight,
+  readLocalStacks,
+  unstackPreflight,
+} from '../src/init.ts';
+import { addArgs, initArgs, unstackArgs } from '../src/plan.ts';
 
 /**
  * Like apply.test.ts, these run against real repositories. The whole job of
@@ -214,6 +220,89 @@ test('initPreflight refuses outside a git repository', async (t) => {
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
 
   assert.match((await initPreflight(cwd, 'main', ['feat/one'])) ?? '', /not a git repository/i);
+});
+
+/**
+ * Adding a branch to a stack that already exists. `gh stack add` itself is not
+ * run, for the same reasons as init — what is covered is the guards, plus the
+ * one thing gh-stack does *not* guard: a dirty tree.
+ */
+
+test('addArgs builds the gh stack add command', () => {
+  assert.deepEqual(addArgs('feat/four'), ['stack', 'add', 'feat/four']);
+});
+
+test('addPreflight accepts a clean repository', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  branch(cwd, 'feat/one');
+
+  // Both meanings of the command: a name to create, and one to adopt.
+  assert.equal(await addPreflight(cwd, 'main', ['feat/one'], 'feat/new'), undefined);
+  branch(cwd, 'feat/two');
+  assert.equal(await addPreflight(cwd, 'main', ['feat/one'], 'feat/two'), undefined);
+});
+
+test('addPreflight refuses a branch already in the stack', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  branch(cwd, 'feat/one');
+
+  const message = await addPreflight(cwd, 'main', ['feat/one'], 'feat/one');
+  assert.match(message ?? '', /already in this stack/i);
+});
+
+test('addPreflight refuses the trunk, an empty name, and an invalid one', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  branch(cwd, 'feat/one');
+
+  assert.match((await addPreflight(cwd, 'main', ['feat/one'], 'main')) ?? '', /trunk/i);
+  assert.match((await addPreflight(cwd, 'main', ['feat/one'], '')) ?? '', /name the branch/i);
+  assert.match(
+    (await addPreflight(cwd, 'main', ['feat/one'], 'feat/../etc')) ?? '',
+    /not a valid branch name/i,
+  );
+});
+
+test('addPreflight refuses a dirty working tree', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  branch(cwd, 'feat/one');
+
+  writeFileSync(join(cwd, 'README.md'), 'edited\n');
+
+  // gh-stack does not refuse this itself — verified against v0.1.0, which
+  // added a branch with uncommitted changes sitting in the tree. The guard is
+  // for the checkout Restack does first, to reach the top of the stack.
+  const message = await addPreflight(cwd, 'main', ['feat/one'], 'feat/new');
+  assert.match(message ?? '', /uncommitted changes/i);
+});
+
+test('addPreflight refuses mid-rebase', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  git(cwd, 'checkout', '-b', 'feat/two');
+  commit(cwd, 'clash.txt', 'theirs\n', 'feat: clash');
+  git(cwd, 'checkout', 'main');
+  commit(cwd, 'clash.txt', 'ours\n', 'main: clash');
+  try {
+    git(cwd, 'rebase', 'main', 'feat/two');
+  } catch {
+    // Expected: the rebase stops on the conflict, which is the state under test.
+  }
+
+  // Checked before the dirty-tree guard, as in unstackPreflight: a paused
+  // rebase leaves unmerged files, and naming those would report the symptom.
+  assert.match((await addPreflight(cwd, 'main', [], 'feat/new')) ?? '', /rebase is in progress/i);
+});
+
+test('addPreflight refuses outside a git repository', async (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'restack-add-bare-'));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  assert.match((await addPreflight(cwd, 'main', [], 'feat/new')) ?? '', /not a git repository/i);
 });
 
 /**

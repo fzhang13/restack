@@ -100,6 +100,24 @@ Below the stack, **Available** lists the repo's other local branches — every
 into trunk. Drag one onto the stack at any position to insert it; drag a stacked
 branch down into the tray to take it out.
 
+Under the tray, **Add on top** is the other way in, and covers what dragging
+cannot: a branch that does not exist yet. It runs `gh stack add <name>`, which
+creates the branch if the name is new and adopts it if it is not, then checks it
+out. Top-only, because gh-stack is — anywhere else it exits 5 with *can only add
+branches to the top of the stack* — so Restack checks the top branch out first
+rather than passing that refusal on. To put a branch further down, drag it in.
+
+Two consequences worth knowing. Adding is not an apply: no commit is rewritten,
+so there is no plan to preview and nothing to undo. And an *adopted* branch
+arrives exactly as `gh stack init` leaves one — recorded in order but not
+rebased onto its new parent — so gh-stack flags it `needsRebase` and the drift
+banner's **Rebase stack** button is the step that replays it, with the usual
+snapshot behind it.
+
+The dirty-tree refusal here is Restack's, not gh-stack's: `gh stack add` will
+happily run with uncommitted changes, but the checkout to the top of the stack
+in front of it will not.
+
 A branch gh-stack has never seen has no recorded base, so Restack uses
 `git merge-base <branch> <trunk>` as the anchor. That is the same kind of value
 as gh-stack's own `base` — a pre-rebase SHA — so an inserted branch replays
@@ -370,6 +388,8 @@ Working:
 - Reads and renders the stack, with PR numbers, merged/queued/needs-rebase badges
 - Drag to reorder, with moved rows highlighted
 - Insert an unstacked local branch at any position; drag one out to un-stack it
+- Add a branch on top of an existing stack, created or adopted, via
+  `gh stack add`
 - Plan generation, verified against real git
 - Distinct UI for: not on a stack, not a git repo, gh missing, parse failure
 - Reordering disabled when the stack has merged branches — gh-stack rejects

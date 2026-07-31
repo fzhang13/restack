@@ -1,8 +1,13 @@
 import { parseStack } from '../../src/parse';
 import { computePlan, publishSteps } from '../../src/plan';
-import type { CandidateBranch } from '../../src/model';
+import type { CandidateBranch, StackBranch } from '../../src/model';
 import fixture from '../../fixtures/stack-no-prs.json';
 
+/**
+ * Mutable, unlike the other fixtures here: `gh stack add` appends to the stack
+ * on disk, so a harness that kept re-sending the parsed fixture would show the
+ * button doing nothing. See handleAdd.
+ */
 const stack = parseStack(JSON.stringify(fixture));
 
 /**
@@ -125,6 +130,36 @@ function sendConflict(files?: string[]) {
 }
 
 /**
+ * What the host does for `addBranch`, minus the CLI: append on top, move HEAD
+ * onto it, and flag it as drifted the way an adopted branch arrives.
+ *
+ * Mutating the stack rather than faking a message is the point — it is what
+ * makes the drift banner appear afterwards, so the add → Rebase stack sequence
+ * can be walked through here rather than only in a repository.
+ */
+function handleAdd(name: string) {
+  if (stack.branches.some((b) => b.name === name)) {
+    console.log('[harness] addBranch', name, '— already in the stack, host would refuse');
+    return;
+  }
+  const top = stack.branches[stack.branches.length - 1];
+  const added: StackBranch = {
+    name,
+    base: top?.base ?? 'a'.repeat(40),
+    isCurrent: true,
+    isMerged: false,
+    isQueued: false,
+    // Adopting does not rebase, so gh-stack flags it — which is what makes the
+    // drift banner the next thing you see.
+    needsRebase: true,
+  };
+  stack.branches = [...stack.branches.map((b) => ({ ...b, isCurrent: false })), added];
+  stack.currentBranch = name;
+  console.log('[harness] addBranch', name, '— appended on top and checked out');
+  sendStack();
+}
+
+/**
  * Apply progress the host would emit. Nothing runs here — the harness has no
  * repository — but the panel has to be reachable to be eyeballed, and an
  * enabled button that did nothing would read as a bug.
@@ -184,6 +219,8 @@ function fakePushSubmit() {
     fakePushSubmit();
   } else if (m.type === 'applyDismiss') {
     window.postMessage({ type: 'applyCleared' }, '*');
+  } else if (m.type === 'addBranch') {
+    handleAdd(m.branch);
   } else if (m.type === 'initStack' || m.type === 'rebaseStack') {
     // Both are host-side: one shells out to gh, the other opens an apply
     // session. Logged so the button is visibly wired.
