@@ -190,6 +190,74 @@ button:disabled {
     0 0 0 3.5px var(--node-color);
 }
 
+/*
+ * HEAD's node, drawn heavier than the ring alone. The ring says "this row is
+ * special"; the halo says it from across the panel, which is the whole point of
+ * a position indicator.
+ */
+.node--head {
+  box-shadow:
+    0 0 0 2px var(--vscode-sideBar-background, var(--vscode-editor-background)),
+    0 0 0 3.5px var(--node-color),
+    0 0 6px 3.5px var(--node-color);
+}
+
+/* "You are here", above the columns. Deliberately quieter than .warn — it is a
+   statement of fact, not a problem to fix. */
+.here {
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 11px;
+  border-left: 2px solid var(--vscode-focusBorder);
+  background: var(--vscode-editorWidget-background, rgba(127, 127, 127, 0.08));
+}
+
+/*
+ * Checkout, revealed on hover. Always laid out — hiding it with `display: none`
+ * would shift every other item in the row the moment the pointer arrived — and
+ * always reachable by keyboard, since :focus-visible brings it back.
+ */
+.row__checkout,
+.trunk .row__checkout {
+  margin-left: auto;
+  padding: 0 4px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 80ms linear;
+}
+
+.row:hover .row__checkout,
+.trunk:hover .row__checkout,
+.row__checkout:focus-visible {
+  opacity: 0.75;
+}
+
+.row__checkout:hover:not(:disabled) {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(127, 127, 127, 0.2));
+}
+
+.row__checkout:disabled {
+  cursor: default;
+}
+
+/* Standing on the trunk is a position like any other, so it is marked like one. */
+.trunk--current .trunk__name {
+  font-weight: 600;
+  opacity: 1;
+}
+
+.trunk--current .trunk__node {
+  background: var(--vscode-focusBorder, #4c8dff);
+  box-shadow: 0 0 5px 2px var(--vscode-focusBorder, #4c8dff);
+}
+
 .row--merged {
   opacity: 0.5;
 }
@@ -239,6 +307,18 @@ button:disabled {
   padding: 1px 4px;
   border-radius: 2px;
   background: rgba(127, 127, 127, 0.25);
+}
+
+/*
+ * Must follow `.badge`: same specificity, so the later rule is the one that
+ * gets to override the shared grey background. Borrows the button pair rather
+ * than `--vscode-focusBorder`, which is a border colour with no matching
+ * foreground — text on it lands around 3.7:1, too thin for a 9px pill.
+ */
+.badge--HEAD {
+  color: var(--vscode-button-foreground, #ffffff);
+  background: var(--vscode-button-background, #0078d4);
+  font-weight: 600;
 }
 
 .badge--needs-rebase {
@@ -330,6 +410,30 @@ button:disabled {
 .candidate__count {
   font-size: 10px;
   opacity: 0.5;
+}
+
+/*
+ * Adding a branch on top. Borrows `.init__row` wholesale rather than restyling
+ * the pair — it is the same control as the builder's, in a stack that already
+ * exists, and it should not look like a different one.
+ */
+.add {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.add__note {
+  margin: 0;
+  padding-left: 78px; /* clears .init__row's label column, so it reads as its caption */
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+.add__note code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  color: var(--vscode-textPreformat-foreground);
+  word-break: break-all;
 }
 
 /* The row under the cursor mid-drag. Rebuilt rather than cloned, so it needs
@@ -533,10 +637,51 @@ button:disabled {
   gap: 2px;
 }
 
+.conflicts__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.conflicts__mark {
+  flex: 0 0 auto;
+  width: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
 .conflicts code {
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 11px;
   color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+/* Staged. Kept in the list rather than removed: a file that vanished the moment
+   it was resolved would take the record of having resolved it along too. */
+.conflicts__row--done .conflicts__mark,
+.conflicts__row--done code {
+  color: var(--vscode-testing-iconPassed, #3fb950);
+}
+
+.conflicts__row--done code {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+.conflicts__state {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+}
+
+/* Opens the three-way merge editor — the route that ends in a staged file, so
+   it leads rather than sits beside the plain-text link. */
+.conflicts__resolve {
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 /* Opens the file in the editor; styled as the path it is, not as a button. */
