@@ -88,6 +88,34 @@ its commits survive, it just stops being part of the stack. If it already has a
 PR, the panel says so — that PR keeps pointing at a base that is no longer its
 parent, and `gh stack submit` will not retarget a branch it no longer tracks.
 
+### Removing the whole stack
+
+**Remove stack** in the toolbar is the counterpart to init: it runs
+`gh stack unstack` on the stack you are standing in. Worth separating from the
+paragraph above, because the two are not the same kind of operation. Dragging one
+branch out is a *rebase* — real commits are rewritten, and it goes through the
+usual plan-then-apply path with a snapshot behind it. Removing the stack rewrites
+nothing. Every branch stays on the commit it is on; gh-stack simply stops
+recording them as a stack, and the panel falls back to the builder.
+
+Like apply, it is split by how far it reaches:
+
+- **Remove Locally** runs `gh stack unstack --local`, which touches only
+  `.git/gh-stack`. Any pull requests stay stacked on GitHub.
+- **Remove & Unstack PRs** runs the full `gh stack unstack`, which also detaches
+  the PRs on GitHub. Restack cannot undo that, so it is only offered when the
+  stack actually has PRs and an `origin` to reach them through.
+
+One gh-stack behaviour to know about: GitHub refuses to unstack PRs that are
+queued for merge or have auto-merge enabled. When that happens the whole stack is
+kept — local tracking included — even though the command exits successfully. So
+Restack re-reads the stack afterwards rather than trusting the exit code, and
+says plainly when the stack is still there.
+
+To remove a *different* stack, check it out first: `gh stack unstack` with no
+argument targets the active one, and the empty-state view already lists the
+repo's other stacks with a **Check out** button.
+
 ### Applying
 
 Apply is split in two, and the halves are not equally recoverable.

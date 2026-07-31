@@ -188,6 +188,12 @@ export type WebviewMessage =
    * an init adopts branches without rebasing them.
    */
   | { type: 'rebaseStack' }
+  /**
+   * Dissolve the stack: `gh stack unstack`. Every branch and commit stays where
+   * it is — only gh-stack's record of them being a stack goes away. The host
+   * confirms the scope, since the remote form also detaches the PRs on GitHub.
+   */
+  | { type: 'removeStack' }
   /** Run the local steps: rebases, then the gh-stack metadata write. */
   | { type: 'apply'; order: string[] }
   /** Run push + submit against an already-applied local reorder. */

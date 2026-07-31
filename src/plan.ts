@@ -172,6 +172,19 @@ export function initArgs(trunk: string, branches: string[]): string[] {
 }
 
 /**
+ * The argv for dissolving a stack: `gh stack unstack`, or `--local` to stop at
+ * the metadata file.
+ *
+ * With no stack argument gh-stack targets the stack holding the checked-out
+ * branch — which is exactly the stack the view is rendering, so the command
+ * needs nothing else to identify it. Neither form rewrites a commit or moves a
+ * branch ref; the branches simply stop being tracked as a stack.
+ */
+export function unstackArgs(local: boolean): string[] {
+  return local ? ['stack', 'unstack', '--local'] : ['stack', 'unstack'];
+}
+
+/**
  * The remote half: push, then submit.
  *
  * `gh stack push` does per-branch `--force-with-lease` itself and skips merged

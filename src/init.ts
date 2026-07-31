@@ -1,12 +1,13 @@
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { runCommand, firstLine, gitCommonDir } from './apply.ts';
-import { initArgs } from './plan.ts';
+import { runCommand, firstLine, gitCommonDir, hasOrigin } from './apply.ts';
+import { initArgs, unstackArgs } from './plan.ts';
 import type { LocalStackSummary } from './model.ts';
 
 /**
- * Creating a stack, for the case Restack used to have no answer for: a
- * repository where no stack exists yet.
+ * Creating and removing a stack, for the cases Restack used to have no answer
+ * for: a repository where no stack exists yet, and a stack the user wants gone.
  *
  * `gh stack init` does the work. What lives here is everything around it —
  * guessing a trunk, listing the stacks already on disk, and refusing the
@@ -223,6 +224,86 @@ export async function runInit(
     firstLine(result.stderr) ||
     firstLine(result.stdout) ||
     `gh ${initArgs(trunk, branches).join(' ')} failed.`
+  );
+}
+
+/** How far a removal reaches: the metadata file, or GitHub as well. */
+export type UnstackScope = 'local' | 'remote';
+
+/**
+ * Refuse a removal the repository is not in a state to survive.
+ *
+ * Same contract as initPreflight: a message means stop. Unstacking rewrites no
+ * commits and moves no branch refs, so there is nothing to snapshot and nothing
+ * an undo would have to put back — but gh-stack can still check out a branch on
+ * its way through, which is what the dirty-tree guard is for.
+ */
+export async function unstackPreflight(
+  cwd: string,
+  scope: UnstackScope,
+): Promise<string | undefined> {
+  const repo = await runCommand('git', ['rev-parse', '--is-inside-work-tree'], cwd);
+  if (repo.code !== 0) {
+    return 'Not a git repository.';
+  }
+
+  const gitDir = await gitCommonDir(cwd);
+  if (!existsSync(join(gitDir, 'gh-stack'))) {
+    return 'No .git/gh-stack file, so there is no stack to remove.';
+  }
+
+  // A half-finished rebase plus a deleted stack record is a state nothing here
+  // can unwind: the record of where the branches were going is gone.
+  //
+  // Checked before the working tree, unlike preflight in apply.ts. A rebase
+  // paused on a conflict leaves unmerged files, so the dirty-tree message below
+  // would fire first and name a symptom instead of the cause.
+  const priv = await runCommand('git', ['rev-parse', '--absolute-git-dir'], cwd);
+  const dirs = [gitDir, priv.code === 0 ? priv.stdout.trim() : gitDir];
+  if (dirs.some((d) => existsSync(join(d, 'rebase-merge')) || existsSync(join(d, 'rebase-apply')))) {
+    return 'A rebase is in progress. Finish or abort it first (`git rebase --abort`).';
+  }
+
+  // gh-stack's unstack path can move HEAD — its failures include
+  // "failed to checkout branch" and "failed to restore branch" — so the same
+  // reasoning as init applies: a dirty tree can strand it partway.
+  const status = await runCommand('git', ['status', '--porcelain', '--untracked-files=no'], cwd);
+  if (status.stdout.trim().length > 0) {
+    return (
+      'Working tree has uncommitted changes. Commit or stash them first — ' +
+      '`gh stack unstack` may check out a branch, and a dirty tree can block it partway.'
+    );
+  }
+
+  if (scope === 'remote' && !(await hasOrigin(cwd))) {
+    return 'No `origin` remote, so there are no pull requests to unstack.';
+  }
+
+  return undefined;
+}
+
+/**
+ * Run `gh stack unstack`. Returns an error message, or undefined on success.
+ *
+ * Success is not the same as "the stack is gone": GitHub refuses to unstack PRs
+ * that are queued or have auto-merge enabled, and gh-stack then keeps the stack
+ * — including local tracking — while still exiting zero. The caller re-reads the
+ * stack afterwards rather than trusting the exit code.
+ */
+export async function runUnstack(
+  cwd: string,
+  ghPath: string,
+  local: boolean,
+): Promise<string | undefined> {
+  const args = unstackArgs(local);
+  // A remote unstack goes through the GitHub API; give it the same headroom the
+  // push and submit steps get.
+  const result = await runCommand(ghPath, args, cwd, local ? 60_000 : 180_000);
+  if (result.code === 0) {
+    return undefined;
+  }
+  return (
+    firstLine(result.stderr) || firstLine(result.stdout) || `gh ${args.join(' ')} failed.`
   );
 }
 
