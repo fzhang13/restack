@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { runCommand, firstLine, gitCommonDir, hasOrigin } from './apply.ts';
-import { initArgs, unstackArgs } from './plan.ts';
+import { addArgs, initArgs, unstackArgs } from './plan.ts';
 import type { LocalStackSummary } from './model.ts';
 
 /**
@@ -224,6 +224,90 @@ export async function runInit(
     firstLine(result.stderr) ||
     firstLine(result.stdout) ||
     `gh ${initArgs(trunk, branches).join(' ')} failed.`
+  );
+}
+
+/**
+ * Refuse an add the stack is not in a state to take.
+ *
+ * Same contract as initPreflight. Verified against gh-stack v0.1.0, which is
+ * stricter than init in one way and looser in another:
+ *
+ *   - It refuses anywhere but the top: `can only add branches to the top of
+ *     the stack; run gh stack top then gh stack add`. The host checks the top
+ *     branch out first, so that refusal never reaches the user — but it is why
+ *     the dirty-tree guard below matters even though `add` itself does not
+ *     check. A dirty tree blocks *our* checkout, not gh-stack's.
+ *   - It does *not* refuse on a dirty tree. Adding with uncommitted changes
+ *     sitting there succeeded and left them uncommitted on the new branch.
+ *
+ * `existing` is the stack's branch names; a name already in it would otherwise
+ * be adopted a second time.
+ */
+export async function addPreflight(
+  cwd: string,
+  trunk: string,
+  existing: string[],
+  branch: string,
+): Promise<string | undefined> {
+  const repo = await runCommand('git', ['rev-parse', '--is-inside-work-tree'], cwd);
+  if (repo.code !== 0) {
+    return 'Not a git repository.';
+  }
+
+  if (!branch) {
+    return 'Name the branch to add.';
+  }
+
+  if (branch === trunk) {
+    return `${trunk} is the trunk, so it cannot also be a branch in the stack.`;
+  }
+
+  if (existing.includes(branch)) {
+    return `${branch} is already in this stack.`;
+  }
+
+  const valid = await runCommand('git', ['check-ref-format', '--branch', branch], cwd);
+  if (valid.code !== 0) {
+    return `${branch} is not a valid branch name.`;
+  }
+
+  // Adding lands HEAD on the new branch, which means a checkout — two of them,
+  // in fact, since we move to the top of the stack first.
+  const priv = await runCommand('git', ['rev-parse', '--absolute-git-dir'], cwd);
+  const dirs = [await gitCommonDir(cwd), priv.code === 0 ? priv.stdout.trim() : ''];
+  if (dirs.some((d) => d && (existsSync(join(d, 'rebase-merge')) || existsSync(join(d, 'rebase-apply'))))) {
+    return 'A rebase is in progress. Finish or abort it first (`git rebase --abort`).';
+  }
+
+  const status = await runCommand('git', ['status', '--porcelain', '--untracked-files=no'], cwd);
+  if (status.stdout.trim().length > 0) {
+    return (
+      'Working tree has uncommitted changes. Commit or stash them first — ' +
+      'adding a branch checks out the top of the stack, and a dirty tree blocks that.'
+    );
+  }
+
+  return undefined;
+}
+
+/**
+ * Run `gh stack add`. Returns an error message, or undefined on success.
+ *
+ * The caller is responsible for standing on the top branch first; see
+ * addPreflight for why.
+ */
+export async function runAdd(
+  cwd: string,
+  ghPath: string,
+  branch: string,
+): Promise<string | undefined> {
+  const result = await runCommand(ghPath, addArgs(branch), cwd, 60_000);
+  if (result.code === 0) {
+    return undefined;
+  }
+  return (
+    firstLine(result.stderr) || firstLine(result.stdout) || `gh ${addArgs(branch).join(' ')} failed.`
   );
 }
 

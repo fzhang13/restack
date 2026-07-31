@@ -172,6 +172,23 @@ export function initArgs(trunk: string, branches: string[]): string[] {
 }
 
 /**
+ * The argv for extending a stack: `gh stack add <branch>`.
+ *
+ * Takes one branch, not a list, because gh-stack does: v0.1.0 accepts a single
+ * optional name and refuses anywhere but the top —
+ * `can only add branches to the top of the stack`. The host checks the top
+ * branch out first rather than surfacing that refusal.
+ *
+ * Whether the branch exists decides what the command means, and gh-stack picks
+ * for itself: a name it can resolve is adopted, one it cannot is created. Both
+ * are the same argv, so the preview shown beside the button stays honest either
+ * way — only the sentence under it changes.
+ */
+export function addArgs(branch: string): string[] {
+  return ['stack', 'add', branch];
+}
+
+/**
  * The argv for dissolving a stack: `gh stack unstack`, or `--local` to stop at
  * the metadata file.
  *

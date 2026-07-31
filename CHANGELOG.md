@@ -20,6 +20,25 @@
   rendered as a warning, since it means nothing you drag will affect where you
   are.
 
+- **Add a branch to a stack that already exists.** The typed-in branch name was
+  only ever offered by the builder, so it disappeared the moment there was a
+  stack to add to — from then on, extending one meant a terminal. Dragging was
+  not the answer either: a branch created a moment ago is fully merged into
+  trunk, so `readCandidates` filters it out of the tray and it never appears to
+  drag.
+
+  **Add on top** under the tray runs `gh stack add <name>` — created if the
+  name is new, adopted if it is not, with the resulting command previewed
+  beside the field the way init's is. Top-only, because gh-stack refuses
+  anywhere else (`can only add branches to the top of the stack`, exit 5), so
+  the host checks the top branch out first instead of relaying that error.
+
+  Not an apply: no commit is rewritten, so there is no plan and nothing to
+  snapshot. An adopted branch lands flagged `needsRebase`, exactly as init
+  leaves one, and the drift banner — reworded, since it named only `gh stack
+  init` — offers the replay. Its own preflight refuses a dirty tree, which
+  `gh stack add` does not: the guard is for the checkout in front of it.
+
 - **Checkout without leaving the panel**, by three routes to the same guarded
   handler. A `⇣` button appears on each row and on the trunk row when the
   pointer is over it (and on keyboard focus, so it is not pointer-only); a
