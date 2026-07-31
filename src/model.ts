@@ -94,8 +94,18 @@ export interface ApplyProgress {
   message?: string;
   /** Branch whose rebase stopped on a conflict. */
   conflictBranch?: string;
-  /** Unmerged paths, so the UI can list what to resolve. */
+  /**
+   * Every path that was unmerged when the pause began, so the UI can list what
+   * to resolve. Held fixed for the duration of the pause: a list that shrank as
+   * files were staged would erase the record of what had already been done.
+   */
   conflictFiles?: string[];
+  /**
+   * The subset of `conflictFiles` still unmerged right now. Empty means the
+   * rebase can continue. Recomputed whenever the index changes, which is what
+   * lets the panel track resolution instead of showing one stale snapshot.
+   */
+  unresolvedFiles?: string[];
   /**
    * True once the rebases and the metadata write have landed. Gates the
    * push/submit button, and gates undo: once pushed, undo is off the table.
@@ -207,5 +217,12 @@ export type WebviewMessage =
   | { type: 'openUrl'; url: string }
   /** Workspace-relative path of a conflicted file to open in the editor. */
   | { type: 'openFile'; path: string }
+  /**
+   * Open a conflicted file in VS Code's three-way merge editor rather than as
+   * plain text with conflict markers. Completing that merge stages the file,
+   * which is exactly what `applyContinue` requires — so the whole resolve loop
+   * stays inside the editor.
+   */
+  | { type: 'openMergeEditor'; path: string }
   | { type: 'checkout'; branch: string }
   | { type: 'showLog' };

@@ -216,7 +216,7 @@ async function revParse(cwd: string, ref: string): Promise<string | undefined> {
   return result.code === 0 ? result.stdout.trim() : undefined;
 }
 
-export { run as runCommand, firstLine, gitCommonDir };
+export { run as runCommand, firstLine, gitCommonDir, rebaseInProgress, unmergedFiles };
 
 /**
  * Whether there is anywhere to push. Checked before the confirmation modal so
@@ -388,6 +388,68 @@ export class ApplyRunner {
     await this.drive();
   }
 
+  /**
+   * Re-read the index and re-emit the paused state, without advancing the plan.
+   *
+   * Called whenever `.git/index` changes while a conflict is open, so staging a
+   * file — from the merge editor, the SCM view, or a terminal, indifferently —
+   * shows up in the panel instead of only being discovered when Continue is
+   * pressed. A no-op unless a conflict is actually open, since the index moves
+   * constantly for reasons that are none of this session's business.
+   */
+  async refreshConflict(): Promise<void> {
+    const session = this.session;
+    if (!session || session.lastProgress?.phase !== 'conflict') {
+      return;
+    }
+    // The rebase ending underneath us — someone ran `git rebase --continue`
+    // themselves — is resume()'s case to handle, not a state to re-render.
+    if (!(await rebaseInProgress(session.cwd))) {
+      return;
+    }
+    this.emitConflict(session, await unmergedFiles(session.cwd));
+  }
+
+  /**
+   * Emit the paused state with a fresh view of what is left to resolve.
+   *
+   * `conflictFiles` is whatever the pause first reported, carried forward
+   * unchanged so the panel keeps listing files that have already been staged;
+   * `unresolvedFiles` is the part that moves. See the note in model.ts.
+   */
+  private emitConflict(
+    session: Session,
+    unresolved: string[],
+    options: { initial?: string[]; refused?: boolean } = {},
+  ): void {
+    const conflictFiles = options.initial ?? session.lastProgress?.conflictFiles ?? unresolved;
+    const branch = session.plan.steps[session.cursor]?.branch ?? 'a branch';
+    const total = conflictFiles.length;
+
+    let message: string;
+    if (options.refused) {
+      // A Continue that could not proceed. Says so plainly rather than
+      // re-rendering the same state and looking like a dead button.
+      message = `Still unresolved: ${unresolved.join(', ')}. Stage the fixes (\`git add\`), then continue.`;
+    } else if (total === 0) {
+      message = `Rebase of ${branch} paused. Resolve, stage, then continue.`;
+    } else if (unresolved.length === 0) {
+      message = `Conflict on ${branch}. All ${total} file${total === 1 ? '' : 's'} resolved — continue to finish the rebase.`;
+    } else if (unresolved.length < total) {
+      message = `Conflict on ${branch}. ${total - unresolved.length} of ${total} file${total === 1 ? '' : 's'} resolved — ${unresolved.length} to go.`;
+    } else {
+      message = `Conflict on ${branch}. Resolve the file${total === 1 ? '' : 's'} below, stage ${total === 1 ? 'it' : 'them'}, then continue.`;
+    }
+
+    this.publishProgress({
+      phase: 'conflict',
+      conflictBranch: session.plan.steps[session.cursor]?.branch,
+      conflictFiles,
+      unresolvedFiles: unresolved,
+      message,
+    });
+  }
+
   /** Resume after the user resolved a conflict in the editor. */
   async resume(): Promise<void> {
     const session = this.require();
@@ -402,12 +464,7 @@ export class ApplyRunner {
 
     const unmerged = await unmergedFiles(session.cwd);
     if (unmerged.length > 0) {
-      this.publishProgress({
-        phase: 'conflict',
-        message: `Still unresolved: ${unmerged.join(', ')}. Stage the fixes (\`git add\`), then continue.`,
-        conflictFiles: unmerged,
-        conflictBranch: session.plan.steps[session.cursor]?.branch,
-      });
+      this.emitConflict(session, unmerged, { refused: true });
       return;
     }
 
@@ -637,19 +694,13 @@ export class ApplyRunner {
    */
   private async reportRebaseFailure(result: RunResult): Promise<void> {
     const session = this.require();
-    const step = session.plan.steps[session.cursor];
 
     if (await rebaseInProgress(session.cwd)) {
       const files = await unmergedFiles(session.cwd);
       session.statuses[session.cursor] = 'running';
-      this.publishProgress({
-        phase: 'conflict',
-        conflictBranch: step?.branch,
-        conflictFiles: files,
-        message: files.length
-          ? `Conflict on ${step?.branch ?? 'a branch'}. Resolve the files below, stage them, then continue.`
-          : `Rebase of ${step?.branch ?? 'a branch'} paused. Resolve, stage, then continue.`,
-      });
+      // This is where the pause begins, so these files *are* the conflict set
+      // the rest of it is measured against.
+      this.emitConflict(session, files, { initial: files });
       return;
     }
 
