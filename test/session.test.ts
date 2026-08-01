@@ -120,6 +120,29 @@ test('publishOnly runs push and submit with no reorder and no undo', async (t) =
   assert.equal(final.localComplete, true);
 });
 
+// The panel renders Roll back from `phase: 'failed'` plus `canUndo`, and abort
+// emits exactly that pair on its way out. Left true, it offers the button a
+// second time for a session it has just cleared, and the click comes back
+// "No apply in progress." — a failure notice for a rollback that worked.
+test('a completed rollback stops offering to roll back', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const stack = readStackFrom(cwd);
+  const next = ['feat/api', 'feat/ui', 'feat/auth'];
+
+  const { runner, states } = collect();
+  await runner.start(cwd, 'gh', stack, computePlan(stack, next), next, 'local');
+  assert.equal(states.at(-1)!.canUndo, true, 'undoable while the session is live');
+
+  await runner.abort();
+
+  const final = states.at(-1)!;
+  assert.match(final.message ?? '', /Rolled back/);
+  assert.equal(final.canUndo, false);
+  assert.equal(runner.active, false);
+});
+
 test('aborting a publish-only session touches nothing', async (t) => {
   const cwd = makeRepo();
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
