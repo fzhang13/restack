@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.5.1
+
+### Changed
+
+- **Four oversized files split into modules.** No behaviour change — every
+  function kept its name, its signature, and the comment explaining it. This is
+  purely about being able to find things: `App.tsx` was 2034 lines and eighteen
+  components, so reaching `ApplyPanel` meant scrolling past nine others, and
+  `extension.ts` was 1897 lines of which ~1500 were one class, so adding a stack
+  operation meant landing in the middle of it.
+
+  - `src/webview/App.tsx` → **62 lines**, now only the loading and error gates.
+    The eighteen components moved to `components/`, the two full-screen views to
+    `views/`, the `useState` block and its message listener to
+    `hooks/useHostState.ts`, and the pure helpers to `lib/`.
+  - `src/extension.ts` → **36 lines**, now `activate`/`deactivate` and the
+    command registrations. `StackViewProvider` moved to `src/view/provider.ts`
+    and the nine stack operations to `src/view/operations/`, alongside the
+    confirmation modals, the QuickPick builders, and the git helpers.
+  - `src/webview/styles.css` → an index of nine `@import`s. Cut on line
+    boundaries rather than by concern: the source interleaves them, and
+    `.badge--new`, `.badge--pr-base`, and `.trunk--current` all depend on where
+    they sit in the cascade rather than on what they are named. esbuild inlines
+    the imports, so the emitted `dist/webview.css` is byte-identical.
+  - `test/apply.test.ts` → four suites (apply, session, preflight, sync-base)
+    over a shared `test/support/repo.ts`. Every test name is verbatim, so a
+    failure report still points at the same thing. 154 tests before and after.
+
+  The operations reach back into the provider through one narrow `Host`
+  interface rather than six arguments each, and the `lastX` fields stay private
+  behind getters — several operations deliberately re-read them after an
+  `await refresh()`, so they have to be live reads and not values captured at
+  call time. The "an apply is in progress" warning, previously copy-pasted eight
+  times, collapsed to one `blockedByApply` helper; both of its wordings survive,
+  since the one shown next to the plan panel points at buttons the other cannot
+  assume are on screen.
+
+  The bare `execFile` git helper moved as-is and was deliberately *not* switched
+  to `git.ts`'s logged `run()` — that would put every checkout in the output
+  channel and change the child environment, which is a behaviour change and not
+  this one.
+
 ## 0.5.0
 
 ### Added
