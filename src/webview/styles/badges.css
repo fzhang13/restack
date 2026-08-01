@@ -1,0 +1,60 @@
+.badge {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 4px;
+  border-radius: 2px;
+  background: rgba(127, 127, 127, 0.25);
+}
+
+/*
+ * Must follow `.badge`: same specificity, so the later rule is the one that
+ * gets to override the shared grey background. Borrows the button pair rather
+ * than `--vscode-focusBorder`, which is a border colour with no matching
+ * foreground — text on it lands around 3.7:1, too thin for a 9px pill.
+ */
+.badge--HEAD {
+  color: var(--vscode-button-foreground, #ffffff);
+  background: var(--vscode-button-background, #0078d4);
+  font-weight: 600;
+}
+
+.badge--needs-rebase {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.badge--leaving {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+  background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.15));
+}
+
+/*
+ * Remote tracking. The arrows are the signal, so these keep the badge's normal
+ * casing rather than the uppercasing the word badges get — "↑2" is not a word,
+ * and text-transform on the count reads as a rendering accident.
+ */
+.badge--ahead,
+.badge--behind,
+.badge--diverged,
+.badge--unpushed,
+.badge--gone {
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Unpushed commits are the expected state of work in progress: stated, not
+   flagged. Behind and diverged are the ones a force-push would destroy. */
+.badge--ahead {
+  color: var(--vscode-gitDecoration-untrackedResourceForeground, #3fb950);
+}
+
+.badge--behind,
+.badge--diverged {
+  color: var(--vscode-editorError-foreground, #f85149);
+  background: var(--vscode-inputValidation-errorBackground, rgba(248, 81, 73, 0.12));
+}
+
+.badge--unpushed,
+.badge--gone {
+  opacity: 0.75;
+}

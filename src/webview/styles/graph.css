@@ -1,0 +1,149 @@
+.columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+/* Single column when the sidebar is narrow. */
+@media (max-width: 420px) {
+  .columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+.column__title {
+  margin: 0 0 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+/*
+ * The git-graph rail. Geometry lives in these three variables so the node,
+ * its connecting segments, and the trunk stay locked together.
+ */
+.graph {
+  --rail-x: 11px; /* centre of the node column */
+  --node-size: 9px;
+  --row-gap: 8px;
+}
+
+.rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--row-gap);
+}
+
+.row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 7px 5px 4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+  /* No overflow clip: the node's rail segments have to escape the row box to
+     bridge the gap to its neighbours. */
+}
+
+.node {
+  position: relative;
+  z-index: 1; /* over the rail, so the ring reads as an occlusion */
+  flex: 0 0 auto;
+  width: var(--node-size);
+  height: var(--node-size);
+  /* Left offset places the node's centre exactly on the rail: the 5px accounts
+     for the row's 1px border plus 4px padding. */
+  margin-left: calc(var(--rail-x) - var(--node-size) / 2 - 5px);
+  border-radius: 50%;
+  background: var(--node-color);
+  /* Ring in the panel background so the rail appears to pass behind the node. */
+  box-shadow: 0 0 0 2px var(--vscode-sideBar-background, var(--vscode-editor-background));
+}
+
+/*
+ * Each row owns the rail segment from its own top edge down to the next row's
+ * top edge (its height plus the gap). Stacked, the segments form one unbroken
+ * line — and because the segment belongs to the row, it travels with it during
+ * a drag rather than staying behind.
+ */
+.row::before {
+  content: '';
+  position: absolute;
+  /* Offsets resolve against the padding box, so discount the 1px border; the
+     further 0.5px centres the 1px line on the node rather than the rail axis. */
+  left: calc(var(--rail-x) - 1.5px);
+  top: 0;
+  bottom: calc(-1 * var(--row-gap));
+  width: 1px;
+  background: var(--vscode-widget-border, rgba(127, 127, 127, 0.45));
+}
+
+/* The tip of the stack: the rail starts at the node, not above it. */
+.rows > .row:first-child::before {
+  top: 50%;
+}
+
+/* The last branch hands the rail off to the trunk, which draws its own run
+   down to the trunk node. Stopping here avoids two translucent 1px lines
+   overlapping (the trunk block is dimmed) and reading as a darker segment. */
+.rows > .row:last-child::before {
+  bottom: 0;
+}
+
+.row--draggable {
+  cursor: grab;
+}
+
+.row--draggable:hover {
+  background: var(--vscode-list-hoverBackground, rgba(127, 127, 127, 0.1));
+}
+
+.row--draggable:active {
+  cursor: grabbing;
+}
+
+/* Fade the lifted row's contents, but not its ::before rail segment — the line
+   has to stay solid while the row travels. */
+.row--dragging > * {
+  opacity: 0.35;
+}
+
+.row--current .name {
+  font-weight: 600;
+}
+
+.row--current .node {
+  box-shadow:
+    0 0 0 2px var(--vscode-sideBar-background, var(--vscode-editor-background)),
+    0 0 0 3.5px var(--node-color);
+}
+
+/*
+ * HEAD's node, drawn heavier than the ring alone. The ring says "this row is
+ * special"; the halo says it from across the panel, which is the whole point of
+ * a position indicator.
+ */
+.node--head {
+  box-shadow:
+    0 0 0 2px var(--vscode-sideBar-background, var(--vscode-editor-background)),
+    0 0 0 3.5px var(--node-color),
+    0 0 6px 3.5px var(--node-color);
+}
+
+/* "You are here", above the columns. Deliberately quieter than .warn — it is a
+   statement of fact, not a problem to fix. */
+.here {
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 11px;
+  border-left: 2px solid var(--vscode-focusBorder);
+  background: var(--vscode-editorWidget-background, rgba(127, 127, 127, 0.08));
+}
