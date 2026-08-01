@@ -297,10 +297,13 @@ is no local snapshot behind it because nothing local was rewritten.
 Every count Restack shows about the remote is read from `refs/remotes` and the
 branch config — one `git for-each-ref`, no network. That is what makes it safe to
 re-read on every `.git/HEAD` change, and it is also the catch: those refs are
-only as fresh as your last fetch. **Fetch** in the toolbar is the one control
-that goes and asks (`git fetch --prune <remote>`), and its tooltip says how long
-ago that last happened. Nothing polls in the background — a hidden network call
-on a timer is not something an editor panel should be doing on your behalf.
+only as fresh as your last fetch. **Fetch** in the toolbar is the control that
+goes and asks (`git fetch --prune <remote>`), and its tooltip says how long ago
+that last happened. Nothing polls on a timer — a network call on a schedule is
+not something an editor panel should be doing on your behalf. The only other
+call that leaves the machine unasked is the one GitHub read described in
+[Stacks that live on GitHub](#stacks-that-live-on-github), which happens once
+when the view first loads and again on Fetch.
 
 `--prune` is not incidental. Without it, a branch deleted on the remote keeps a
 stale `refs/remotes` entry and reads as level forever, so `gone` would never
@@ -341,6 +344,53 @@ disables its button, so the UI never offers an action preflight will reject.
 `gone` is excluded from all of this on purpose: a branch deleted after its PR
 merged has nothing left to clobber, and refusing there would block every stack
 that had ever landed anything.
+
+### Stacks that live on GitHub
+
+![Restack showing GitHub stack numbers on two switcher rows, a drift warning, a stack that exists only on the remote, and a PR base badge in the Current column](https://raw.githubusercontent.com/fzhang13/restack/main/media/screenshot-github.png)
+
+Everything above is local-first by construction, and that leaves a blind spot.
+`gh stack view` reports the stack HEAD is standing in; `.git/gh-stack` records
+the stacks *this clone* knows about. A stack that exists only on the server is
+invisible to both — a colleague's, your own from another laptop, or a PR someone
+appended to your stack on GitHub while you were working.
+
+GitHub's GraphQL API now models stacks natively (`PullRequest.stack`, with
+`number`, `size`, `baseRefName`, and its ordered entries), so Restack asks for
+them in the same call that fetches PR badges. That call already existed and was
+already authenticated; it went from `gh pr list --json` to `gh api graphql`, so
+this costs one request, not two. Three things come out of it:
+
+- **A `⧉14025` badge** on a switcher row whose PRs all report the same GitHub
+  stack. When they report *two*, the badge is omitted rather than guessed at —
+  the same ambiguity gh-stack refuses locally with `belongs to multiple stacks`.
+- **A `+1 on GitHub` warning** when that stack has an open PR this clone has no
+  branch for. The tooltip names the branches and points at `gh stack sync`,
+  which is the command that reconciles it. The reverse — a local branch not yet
+  submitted — is ordinary and gets no warning. Merged and closed entries count
+  as neither; the normal end of a stack's life is not drift.
+- **An "On GitHub only" list**, for stacks sharing no branch with anything here,
+  with a Check out button running `gh stack checkout <pr>`. Fully-merged stacks
+  are dropped, and the button targets the bottom-most *open* PR, since a merged
+  one may have had its branch deleted. It renders nothing when the list is
+  empty, so a solo repository sees no new chrome.
+
+Per-branch, the *Current* column gains a `PR base: X` badge when a PR targets
+something other than the row beneath it. gh-stack records a base **SHA** locally
+and never reads the PR's own `baseRefName`, so a base retargeted on the server
+leaves the local view complete and wrong.
+
+The freshness rule is the one above: read once when the view first loads, then
+on Fetch and on a stack switch, and cached in between so the `.git/HEAD` watcher
+stays network-free. The first read is deferred and not awaited — it lands after
+first paint rather than delaying it.
+
+Set **`restack.readRemoteStacks: false`** to skip the whole path. Restack then
+falls back to the `gh pr list` call it always made, so the PR badges stay and
+only the three surfaces above disappear. The same fallback happens
+automatically on a GitHub Enterprise Server old enough to have no `stack` field
+— the API answers `undefinedField`, which Restack reads as "ask the old way"
+rather than as an error.
 
 ### Why Restack writes `.git/gh-stack`
 
@@ -420,6 +470,10 @@ setting, so it lives in your user settings and a workspace cannot override it �
 Restack executes that path on startup, and a repository you have just cloned
 should not get to choose what runs.
 
+`restack.readRemoteStacks` (default on) controls the GitHub read described in
+[Stacks that live on GitHub](#stacks-that-live-on-github). It needs no scope
+`gh` does not already have, and turning it off costs only the badges it feeds.
+
 ## Development
 
 ```bash
@@ -436,9 +490,10 @@ Every screenshot is rendered from the real webview bundle through
 `test/harness/index.html` — a scripted reorder for `screenshot.png`,
 drag-and-type for `screenshot-init.png`, the harness's `?view=behind` scene for
 `screenshot-remote.png`, which needs no gesture because the state is the
-subject, and `?view=multi` with the disclosure clicked open for
-`screenshot-switcher.png`. They cannot drift from the UI, because they *are* the
-UI.
+subject, `?view=multi` with the disclosure clicked open for
+`screenshot-switcher.png`, and `?view=github` for `screenshot-github.png`, whose
+three subjects sit far enough apart on the screen to need a taller frame than
+the rest. They cannot drift from the UI, because they *are* the UI.
 
 ### Sandbox
 
@@ -486,7 +541,10 @@ open test/harness/index.html
 ```
 
 `?view=` reaches the states a single fixture cannot be in at once — `init`,
-`outside`, `drift`, `trunk`, `away`, `multi`, and `conflict`. The conflict view is
+`outside`, `drift`, `trunk`, `away`, `multi`, `github`, and `conflict`. The
+`github` view is the only one carrying data no local command can produce, so it
+is also the only place the GitHub surfaces are reachable without a remote. The
+conflict view is
 interactive rather than a still: clicking **Resolve** marks the file staged and
 re-emits after a beat, standing in for the merge editor and the index watcher, so
 the gating on *Continue* can be exercised with no repository behind it.
@@ -553,7 +611,11 @@ Working:
 - Basing a stack on any branch, local or remote-only — a colleague's work rather
   than the default branch — and moving an existing stack onto a different base
 - Remote state read from local refs: ahead/behind pills per row, a Fetch button
-  as the only network call, and Sync stack to fast-forward a trunk that moved
+  as the only git network call, and Sync stack to fast-forward a trunk that moved
+- Stacks read from GitHub itself, via the GraphQL `PullRequest.stack` field: a
+  stack-number badge and a drift warning on stacks you already have, a
+  checkout-able list of stacks that exist only on the remote, and a `PR base`
+  badge when a PR targets something other than the row beneath it
 - Dirty-worktree and mid-rebase refusal before anything runs
 - Refusal to rewrite a branch that is behind its upstream, which `gh stack push`
   would then force-push over
@@ -570,8 +632,12 @@ Not built yet:
 - A stack branch that is behind its upstream is refused, not reconciled. Pulling
   it is left to you: once both sides have moved there is no safe automatic
   answer, and guessing one is how commits go missing.
-- Nothing fetches on a schedule. The counts are as old as your last Fetch, which
-  the tooltip tells you.
+- Nothing fetches on a schedule. The ahead/behind counts are as old as your last
+  Fetch, which the tooltip tells you, and the GitHub stack data is as old as the
+  last time the view loaded or you pressed Fetch.
+- Remote stacks are read, not written. Restack can check one out, but reordering
+  or appending to a stack still happens locally and reaches GitHub through Push
+  & Submit.
 - Push and submit are verified by unit tests and by hand, not end to end in CI —
   that needs a throwaway GitHub repo.
 

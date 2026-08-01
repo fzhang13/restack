@@ -4,8 +4,17 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { emptyGraph } from '../src/github.ts';
 import { readStack } from '../src/stack.ts';
-import { readPullRequests, readStackSummaries, topBranchOf } from '../src/stacks.ts';
+import {
+  computeDivergence,
+  matchRemoteStack,
+  readPullRequests,
+  readStackSummaries,
+  remoteOnlyStacks,
+  topBranchOf,
+} from '../src/stacks.ts';
+import type { BranchPr, GithubGraph, RemoteStack } from '../src/model.ts';
 
 /**
  * Real repositories, for init.test.ts's reason: readStackSummaries reads
@@ -166,7 +175,7 @@ test('PRs are matched to branches by head ref', async (t) => {
   );
 
   const prs = await readPullRequests(cwd, gh);
-  const [stack] = await readStackSummaries(cwd, [], prs);
+  const [stack] = await readStackSummaries(cwd, [], { ...emptyGraph(), prs });
 
   // gh reports states uppercase; the webview keys CSS off them lowercased.
   assert.equal(stack.prs['feat/auth'].state, 'merged');
@@ -253,4 +262,219 @@ test('a branch in several stacks is no-stack, not an error', async (t) => {
 test('topBranchOf returns the top, which is the branch to check out', () => {
   assert.equal(topBranchOf({ branches: ['feat/auth', 'feat/api'] }), 'feat/api');
   assert.equal(topBranchOf({ branches: [] }), undefined);
+});
+
+/**
+ * The GitHub half. Pure functions over data github.ts already parsed, so these
+ * need neither a repository nor a fake `gh` — unlike the tests above, which are
+ * claims about git's output and gh's exit codes.
+ */
+
+/** A PR index entry, with only the fields the matchers read. */
+function pr(number: number, stackNumber?: number): BranchPr {
+  return { number, url: '', title: '', state: 'open', isDraft: false, stackNumber };
+}
+
+function prIndex(entries: Record<string, BranchPr>): Map<string, BranchPr> {
+  return new Map(Object.entries(entries));
+}
+
+/** A GitHub stack from `branch: state` pairs, numbered bottom-to-top. */
+function remoteStack(
+  number: number,
+  branches: Array<[string, string]>,
+  baseRefName = 'main',
+): RemoteStack {
+  return {
+    number,
+    size: branches.length,
+    baseRefName,
+    entries: branches.map(([headRefName, state], i) => ({
+      position: i + 1,
+      number: 100 + i,
+      headRefName,
+      state,
+    })),
+  };
+}
+
+test('a local stack whose PRs agree on one GitHub stack is matched to it', () => {
+  const matched = matchRemoteStack(
+    { trunk: 'main', branches: ['feat/auth', 'feat/api'] },
+    prIndex({ 'feat/auth': pr(7, 42), 'feat/api': pr(8, 42) }),
+  );
+
+  assert.equal(matched, 42);
+});
+
+test('one submitted branch is enough to match — the top is often unsubmitted', () => {
+  const matched = matchRemoteStack(
+    { trunk: 'main', branches: ['feat/auth', 'feat/api'] },
+    prIndex({ 'feat/auth': pr(7, 42) }),
+  );
+
+  assert.equal(matched, 42);
+});
+
+test('a stack with no PRs matches nothing', () => {
+  assert.equal(
+    matchRemoteStack({ trunk: 'main', branches: ['feat/auth'] }, prIndex({})),
+    undefined,
+  );
+  // A PR that exists but belongs to no GitHub stack is the same answer: a
+  // single unstacked PR is not a stack to badge.
+  assert.equal(
+    matchRemoteStack({ trunk: 'main', branches: ['feat/auth'] }, prIndex({ 'feat/auth': pr(7) })),
+    undefined,
+  );
+});
+
+test('branches pointing at two GitHub stacks match neither', () => {
+  // The ambiguity gh-stack refuses locally with `belongs to multiple stacks`.
+  // Picking one to badge would present a guess as a fact.
+  const matched = matchRemoteStack(
+    { trunk: 'main', branches: ['feat/auth', 'feat/api'] },
+    prIndex({ 'feat/auth': pr(7, 42), 'feat/api': pr(8, 43) }),
+  );
+
+  assert.equal(matched, undefined);
+});
+
+test('a PR added to the stack on GitHub shows as onlyRemote', () => {
+  const divergence = computeDivergence(
+    ['feat/auth', 'feat/api'],
+    remoteStack(42, [
+      ['feat/auth', 'open'],
+      ['feat/api', 'open'],
+      ['feat/cache', 'open'],
+    ]),
+  );
+
+  assert.deepEqual(divergence.onlyRemote, ['feat/cache']);
+  assert.deepEqual(divergence.onlyLocal, []);
+});
+
+test('a branch not yet submitted shows as onlyLocal, which is ordinary', () => {
+  const divergence = computeDivergence(
+    ['feat/auth', 'feat/api'],
+    remoteStack(42, [['feat/auth', 'open']]),
+  );
+
+  assert.deepEqual(divergence.onlyRemote, []);
+  assert.deepEqual(divergence.onlyLocal, ['feat/api']);
+});
+
+test('merged and closed entries are not divergence', () => {
+  // A PR that merged and had its branch deleted is the normal end of a stack's
+  // life — the same reason `isTracked` ignores a `gone` upstream.
+  const divergence = computeDivergence(
+    ['feat/api'],
+    remoteStack(42, [
+      ['feat/auth', 'MERGED'],
+      ['feat/old', 'closed'],
+      ['feat/api', 'open'],
+    ]),
+  );
+
+  assert.deepEqual(divergence.onlyRemote, []);
+  assert.deepEqual(divergence.onlyLocal, []);
+});
+
+test('a stack with no local branches is offered for checkout', () => {
+  const github: GithubGraph = {
+    ...emptyGraph(),
+    stacks: new Map([[42, remoteStack(42, [['their/one', 'open'], ['their/two', 'open']], 'trunk')]]),
+  };
+
+  const [only] = remoteOnlyStacks(github, [{ trunk: 'main', branches: ['mine'] }]);
+
+  assert.equal(only.number, 42);
+  assert.equal(only.baseRefName, 'trunk');
+  // The bottom-most open PR: checkout resolves the stack from any of its PRs.
+  assert.equal(only.checkoutPr, 100);
+});
+
+test('a stack sharing even one branch is not remote-only', () => {
+  // Half checked out is a stack you already have; offering to check it out
+  // again would be offering to redo work. Divergence covers it instead.
+  const github: GithubGraph = {
+    ...emptyGraph(),
+    stacks: new Map([[42, remoteStack(42, [['feat/auth', 'open'], ['feat/api', 'open']])]]),
+  };
+
+  assert.deepEqual(remoteOnlyStacks(github, [{ trunk: 'main', branches: ['feat/auth'] }]), []);
+});
+
+test('a fully merged stack is dropped, as gh stack checkout drops it', () => {
+  const github: GithubGraph = {
+    ...emptyGraph(),
+    stacks: new Map([[42, remoteStack(42, [['done/one', 'MERGED'], ['done/two', 'MERGED']])]]),
+  };
+
+  assert.deepEqual(remoteOnlyStacks(github, []), []);
+});
+
+test('checkoutPr skips a merged bottom whose branch may be gone', () => {
+  const github: GithubGraph = {
+    ...emptyGraph(),
+    stacks: new Map([[42, remoteStack(42, [['done', 'MERGED'], ['live', 'open']])]]),
+  };
+
+  assert.equal(remoteOnlyStacks(github, [])[0].checkoutPr, 101);
+});
+
+test('a matched stack carries its GitHub number and divergence into the summary', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  branch(cwd, 'feat/auth');
+  branch(cwd, 'feat/api', 'feat/auth');
+  writeMetadata(cwd, [{ trunk: 'main', branches: ['feat/auth', 'feat/api'] }]);
+
+  const github: GithubGraph = {
+    ...emptyGraph(),
+    prs: prIndex({ 'feat/auth': pr(7, 42), 'feat/api': pr(8, 42) }),
+    stacks: new Map([
+      [42, remoteStack(42, [['feat/auth', 'open'], ['feat/api', 'open'], ['feat/cache', 'open']])],
+    ]),
+  };
+
+  const [summary] = await readStackSummaries(cwd, [], github);
+
+  assert.equal(summary.remoteStackNumber, 42);
+  assert.deepEqual(summary.divergence?.onlyRemote, ['feat/cache']);
+});
+
+test('a stack that agrees with GitHub carries no divergence at all', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  branch(cwd, 'feat/auth');
+  writeMetadata(cwd, [{ trunk: 'main', branches: ['feat/auth'] }]);
+
+  const github: GithubGraph = {
+    ...emptyGraph(),
+    prs: prIndex({ 'feat/auth': pr(7, 42) }),
+    stacks: new Map([[42, remoteStack(42, [['feat/auth', 'open']])]]),
+  };
+
+  const [summary] = await readStackSummaries(cwd, [], github);
+
+  // Undefined rather than a pair of empty arrays: the UI treats its presence
+  // as the signal rather than having to look inside.
+  assert.equal(summary.divergence, undefined);
+  assert.equal(summary.remoteStackNumber, 42);
+});
+
+test('summaries built without GitHub carry no stack fields and still work', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  branch(cwd, 'feat/auth');
+  writeMetadata(cwd, [{ trunk: 'main', branches: ['feat/auth'] }]);
+
+  const [summary] = await readStackSummaries(cwd, []);
+
+  assert.equal(summary.remoteStackNumber, undefined);
+  assert.equal(summary.divergence, undefined);
 });

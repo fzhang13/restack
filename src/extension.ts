@@ -16,11 +16,14 @@ import {
 } from './remote';
 import {
   ApplyRunner,
+  firstLine,
   hasOrigin,
   preflight,
   rebaseInProgress,
+  runCommand,
   type PersistedSession,
 } from './apply';
+import { REMOTE_TIMEOUT_MS } from './git';
 import {
   addPreflight,
   detectTrunk,
@@ -32,13 +35,16 @@ import {
   unstackPreflight,
   type UnstackScope,
 } from './init';
-import { readPullRequests, readStackSummaries, topBranchOf, type PrIndex } from './stacks';
+import { emptyGraph, readGithubGraph } from './github';
+import { readPullRequests, readStackSummaries, remoteOnlyStacks, topBranchOf } from './stacks';
 import type {
   ApplyScope,
   CandidateBranch,
+  GithubGraph,
   HostMessage,
   Plan,
   RemoteState,
+  RemoteStackSummary,
   Stack,
   StackResult,
   StackSummary,
@@ -68,15 +74,21 @@ class StackViewProvider implements vscode.WebviewViewProvider {
   private lastRemote?: RemoteState;
   /** Every stack in the repository, for the switcher. See stacks.ts. */
   private lastStacks: StackSummary[] = [];
+  /** Stacks GitHub knows about and this clone does not. See stacks.ts. */
+  private lastRemoteStacks: RemoteStackSummary[] = [];
   /**
-   * Pull requests for the whole repository, keyed by head branch.
+   * What GitHub says about this repository: its pull requests keyed by head
+   * branch, and the stacks those PRs belong to.
    *
    * Cached because refresh() runs on every `.git/HEAD` change — once per rebase
    * step during an apply — and this is the only part of it that reaches the
    * network. Refilled by fetch() and by an explicit stack switch, which are the
-   * two moments the user has asked for current information.
+   * two moments the user has asked for current information, plus one deferred
+   * read after the first refresh so a freshly opened window is not blank.
    */
-  private prs: PrIndex = new Map();
+  private github: GithubGraph = emptyGraph();
+  /** Whether the deferred first read has been started. See loadGithub. */
+  private githubLoaded = false;
   private readonly runner: ApplyRunner;
   private readonly log: vscode.OutputChannel;
   private readonly status: vscode.StatusBarItem;
@@ -271,6 +283,9 @@ class StackViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'switchStack':
           void this.handleSwitchStack(message.index);
+          break;
+        case 'checkoutRemoteStack':
+          void this.handleCheckoutRemoteStack(message.pr);
           break;
         case 'newStack':
           void this.handleNewStack();
@@ -502,8 +517,83 @@ class StackViewProvider implements vscode.WebviewViewProvider {
     // The user asked to look at a different stack, so the badges on it should
     // not be from whenever the window happened to open. Best-effort: a failed
     // call leaves the previous index in place rather than blanking the rows.
-    this.prs = await readPullRequests(this.workspacePath() ?? '', this.ghPath());
+    await this.loadGithub(this.workspacePath() ?? '');
     await this.handleCheckout(top);
+  }
+
+  /**
+   * Materialize a stack that exists only on GitHub.
+   *
+   * The counterpart to handleSwitchStack, and a different kind of action.
+   * Switching is a checkout of branches this clone already has; this is
+   * `gh stack checkout <pr>`, which queries GitHub for the stack, fetches every
+   * branch in it, and writes `.git/gh-stack`. It creates local state that was
+   * not there before, so it is confirmed rather than done on one click.
+   *
+   * The PR number is always passed. `gh stack checkout` with no argument opens
+   * an interactive picker, which from an extension host would block on a
+   * terminal nobody can see.
+   */
+  private async handleCheckoutRemoteStack(pr: number): Promise<void> {
+    const cwd = this.workspacePath();
+    if (!cwd) {
+      return;
+    }
+    if (this.runner.active) {
+      void vscode.window.showWarningMessage(
+        'Restack: an apply is in progress. Finish or dismiss it first.',
+      );
+      return;
+    }
+
+    const target = this.lastRemoteStacks.find((s) => s.checkoutPr === pr);
+
+    await this.guard(async () => {
+      // handleCheckout's guard, for its reason: a rebase Restack did not start
+      // is invisible to `runner.active`, and gh-stack's checkout would strand
+      // it just as a plain checkout would.
+      if (await rebaseInProgress(cwd)) {
+        void vscode.window.showErrorMessage(
+          'Restack: a rebase is in progress. Finish it (`git rebase --continue`) or abort it before checking out a stack.',
+        );
+        return;
+      }
+
+      const count = target?.entries.length ?? 0;
+      const confirmed = await vscode.window.showInformationMessage(
+        target ? `Check out stack ${target.number} from GitHub?` : `Check out the stack for #${pr}?`,
+        {
+          modal: true,
+          detail:
+            `Restack will run \`gh stack checkout ${pr}\`, which asks GitHub for the stack, ` +
+            `creates a local branch for each of its ${count || 'pull requests'}` +
+            `${count ? ' pull requests' : ''}, records the stack in .git/gh-stack, and checks out ` +
+            `its top branch. Nothing on GitHub changes.`,
+        },
+        'Check Out',
+      );
+      if (confirmed !== 'Check Out') {
+        return;
+      }
+
+      const result = await vscode.window.withProgress(
+        { location: { viewId: 'restack.stackView' }, title: `Checking out the stack for #${pr}…` },
+        () =>
+          runCommand(this.ghPath(), ['stack', 'checkout', String(pr)], cwd, REMOTE_TIMEOUT_MS),
+      );
+      if (result.code !== 0) {
+        void vscode.window.showErrorMessage(
+          `Restack: ${firstLine(result.stderr) || `gh stack checkout ${pr} failed.`}`,
+        );
+        this.log.show(true);
+        return;
+      }
+
+      // The stack is local now, so the graph that called it remote-only is out
+      // of date — and its branches have PRs the badges should be showing.
+      await this.loadGithub(cwd);
+      await this.refresh();
+    });
   }
 
   /**
@@ -657,6 +747,50 @@ class StackViewProvider implements vscode.WebviewViewProvider {
 
   private ghPath(): string {
     return vscode.workspace.getConfiguration('restack').get<string>('ghPath', 'gh');
+  }
+
+  /**
+   * Ask GitHub what it knows, and remember it.
+   *
+   * The one network read outside git, and the only place `this.github` is
+   * written. Two paths behind one call: the GraphQL read, which brings back
+   * stacks as well as PRs, and the `gh pr list` read it falls back to on a
+   * server that has never heard of `PullRequest.stack`. The fallback keeps the
+   * PR badges Restack has always shown rather than letting a newer query take
+   * a working feature down with it on GitHub Enterprise.
+   *
+   * Best-effort throughout: a failed call leaves the previous graph in place,
+   * because stale badges beat a row that suddenly has none.
+   */
+  private async loadGithub(cwd: string): Promise<void> {
+    if (!this.readsRemoteStacks()) {
+      return;
+    }
+    this.githubLoaded = true;
+
+    const graph = await readGithubGraph(cwd, this.ghPath());
+    if (!graph.supported) {
+      this.log.appendLine(
+        'This GitHub API does not expose PullRequest.stack; falling back to `gh pr list`. ' +
+          'PR badges will show, stack badges will not.',
+      );
+      const prs = await readPullRequests(cwd, this.ghPath());
+      this.github = { ...emptyGraph(), prs };
+      return;
+    }
+
+    for (const number of graph.truncated) {
+      this.log.appendLine(
+        `GitHub stack ${number} has more pull requests than Restack asked for; ` +
+          'its row lists the first 50.',
+      );
+    }
+    this.github = graph;
+  }
+
+  /** The escape hatch for a repository where reaching GitHub is unwelcome. */
+  private readsRemoteStacks(): boolean {
+    return vscode.workspace.getConfiguration('restack').get<boolean>('readRemoteStacks', true);
   }
 
   /**
@@ -974,11 +1108,11 @@ class StackViewProvider implements vscode.WebviewViewProvider {
         this.log.show(true);
       }
 
-      // The switcher's PR badges are the other half of "as of the last fetch",
-      // and this button is what that phrase refers to. Best-effort, like the
-      // fetch above: a failed call leaves the previous badges rather than
-      // blanking every row.
-      this.prs = await readPullRequests(cwd, this.ghPath());
+      // The switcher's PR and stack badges are the other half of "as of the
+      // last fetch", and this button is what that phrase refers to.
+      // Best-effort, like the fetch above: a failed call leaves the previous
+      // badges rather than blanking every row.
+      await this.loadGithub(cwd);
 
       // Either way: a partial fetch still moved some refs, and the counts
       // should reflect what is actually on disk.
@@ -1574,6 +1708,7 @@ class StackViewProvider implements vscode.WebviewViewProvider {
         candidates: [],
         canPublish: false,
         stacks: [],
+        remoteStacks: [],
       });
       return;
     }
@@ -1597,8 +1732,11 @@ class StackViewProvider implements vscode.WebviewViewProvider {
     this.lastStacks = await readStackSummaries(
       cwd,
       this.lastStack?.branches.map((b) => b.name) ?? [],
-      this.prs,
+      this.github,
     );
+    // Stacks GitHub has and this clone does not. Derived from the same cached
+    // graph, so this stays as free as the summaries above.
+    this.lastRemoteStacks = remoteOnlyStacks(this.github, this.lastStacks);
     // Late, because it reads lastStacks for the "stack N of M" suffix.
     this.updateStatus(this.lastStack);
 
@@ -1625,7 +1763,27 @@ class StackViewProvider implements vscode.WebviewViewProvider {
       canPublish: await hasOrigin(cwd),
       remote: this.lastRemote,
       stacks: this.lastStacks,
+      remoteStacks: this.lastRemoteStacks,
     });
+
+    // The first read of GitHub, once — deliberately after the post above, and
+    // deliberately not awaited. Everything up to here is local, so the view is
+    // already on screen; making it wait on a network round trip would put a
+    // spinner in front of information that does not need one. Later refreshes
+    // reuse the cache, which is what keeps the `.git/HEAD` watcher path free of
+    // the network.
+    //
+    // The flag is set inside loadGithub rather than here, so turning
+    // `readRemoteStacks` on mid-session is picked up by the next refresh
+    // instead of needing a window reload.
+    if (!this.githubLoaded && this.readsRemoteStacks()) {
+      void this.guard(async () => {
+        await this.loadGithub(cwd);
+        if (this.github.prs.size > 0 || this.github.stacks.size > 0) {
+          await this.refresh();
+        }
+      });
+    }
   }
 
   private html(webview: vscode.Webview): string {

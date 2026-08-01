@@ -2,6 +2,7 @@ import { parseStack } from '../../src/parse';
 import { changeBasePlan, computePlan, publishSteps, syncPlan } from '../../src/plan';
 import type {
   CandidateBranch,
+  RemoteStackSummary,
   RemoteState,
   StackBranch,
   StackSummary,
@@ -44,6 +45,8 @@ const candidates: CandidateBranch[] = [
  *   ?view=remote-base a stack based on a colleague's branch, not on main
  *   ?view=no-remote no remote at all: Fetch disabled, no badges anywhere
  *   ?view=multi   three stacks in one repository — the switcher
+ *   ?view=github  the same, plus what GitHub knows: stack numbers, drift, and a
+ *                 stack that exists only on the remote
  */
 const view = new URLSearchParams(location.search).get('view') ?? '';
 
@@ -94,6 +97,58 @@ const localStacks: StackSummary[] = [
 function stacksWithActive(index: number): StackSummary[] {
   return localStacks.map((s) => ({ ...s, isActive: s.index === index }));
 }
+
+/**
+ * The three things reading GitHub adds, one per stack, since the point is that
+ * they are independent of each other:
+ *
+ *   1 — matched and in agreement: a stack number and nothing else.
+ *   2 — matched and diverged: someone added a PR to it on GitHub.
+ *   3 — not matched at all, which is the ordinary case for a stack whose PRs
+ *       were opened by hand rather than through `gh stack`.
+ */
+function stacksWithGithub(): StackSummary[] {
+  return stacksWithActive(1).map((s) => {
+    if (s.index === 1) {
+      return {
+        ...s,
+        remoteStackNumber: 1204,
+        // #42 should target feat/auth, the branch below it. GitHub retargets a
+        // PR to the trunk when its parent closes, and gh-stack records a base
+        // SHA locally and never notices — so the column reads as fine.
+        prs: {
+          ...s.prs,
+          'feat/api': { ...s.prs['feat/api'], baseRefName: 'main' },
+        },
+      };
+    }
+    if (s.index === 2) {
+      return {
+        ...s,
+        remoteStackNumber: 1187,
+        divergence: { onlyRemote: ['db/indexes'], onlyLocal: ['db/seed'] },
+      };
+    }
+    return s;
+  });
+}
+
+/**
+ * A stack on GitHub this clone has no branch for — a colleague's. The case
+ * neither `gh stack view` nor `.git/gh-stack` can see, so it is the whole
+ * subject of the "On GitHub only" list.
+ */
+const remoteOnly: RemoteStackSummary[] = [
+  {
+    number: 1163,
+    baseRefName: 'main',
+    checkoutPr: 27,
+    entries: [
+      { position: 1, number: 27, headRefName: 'sam/parser-errors', state: 'open' },
+      { position: 2, number: 29, headRefName: 'sam/parser-recovery', state: 'open' },
+    ],
+  },
+];
 
 /** Remote-tracking refs, for the init view's remote optgroup. */
 const remoteBranches = ['origin/main', 'origin/colleague/feature', 'origin/release/2.0'];
@@ -152,6 +207,7 @@ function sendStack() {
         candidates,
         canPublish: true,
         stacks: view === 'outside' ? localStacks : [],
+        remoteStacks: [],
       },
       '*',
     );
@@ -181,7 +237,17 @@ function sendStack() {
     'remote-base': { ...stack, trunk: 'colleague/feature' },
   };
 
-  const shown = (stacks[view] ?? stack) as typeof stack;
+  // The github view is the one scene where the columns and the switcher are on
+  // screen together, so the PR numbers have to agree — `no PR` in the column
+  // beside `#42` in the row above it would read as a bug rather than as a
+  // fixture that happens not to carry them.
+  const prNumbers: Record<string, number> = { 'feat/auth': 41, 'feat/api': 42 };
+  const submitted = {
+    ...stack,
+    branches: stack.branches.map((b) => ({ ...b, prNumber: prNumbers[b.name] })),
+  };
+
+  const shown = (view === 'github' ? submitted : (stacks[view] ?? stack)) as typeof stack;
   const result = { kind: 'ok', stack: shown };
   window.postMessage(
     {
@@ -190,10 +256,14 @@ function sendStack() {
       candidates,
       canPublish: true,
       remote: remoteFor(shown.trunk),
-      // Only the multi view has more than one stack; everywhere else the
-      // switcher renders nothing, which is what a one-stack repository should
-      // see. Stack 1 is the one this fixture describes.
-      stacks: view === 'multi' ? stacksWithActive(1) : [],
+      // Only the multi and github views have more than one stack; everywhere
+      // else the switcher renders nothing, which is what a one-stack repository
+      // should see. Stack 1 is the one this fixture describes.
+      stacks:
+        view === 'github' ? stacksWithGithub() : view === 'multi' ? stacksWithActive(1) : [],
+      // Everywhere else this is empty, which is both the common repository and
+      // what `restack.readRemoteStacks: false` produces.
+      remoteStacks: view === 'github' ? remoteOnly : [],
     },
     '*',
   );

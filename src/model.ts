@@ -202,6 +202,97 @@ export interface BranchPr {
   title: string;
   state: PullRequestState;
   isDraft: boolean;
+  /**
+   * The branch this PR actually targets on GitHub. Not the same thing as
+   * `StackBranch.base`, which is the SHA gh-stack recorded locally — so a PR
+   * whose base was changed on the server is only visible here.
+   *
+   * Absent on the `gh pr list` fallback path, which does not ask for it.
+   */
+  baseRefName?: string;
+  /** The GitHub stack this PR belongs to, when it belongs to one. */
+  stackNumber?: number;
+  /** How many PRs GitHub counts in that stack. */
+  stackSize?: number;
+}
+
+/** One PR's place in a GitHub stack. */
+export interface RemotePrEntry {
+  /** 1-based, counting from the bottom — the direction `branches` runs in. */
+  position: number;
+  number: number;
+  headRefName: string;
+  state: PullRequestState;
+}
+
+/**
+ * A stack as GitHub models it: `PullRequest.stack`, a first-class object with
+ * its own number, distinct from any PR number and from gh-stack's local index.
+ */
+export interface RemoteStack {
+  /** The number shown in the GitHub stack UI, and taken by `gh stack link`. */
+  number: number;
+  /** GitHub's own count, which can exceed `entries` when a stack is long. */
+  size: number;
+  /** The branch the bottom of the stack targets. */
+  baseRefName: string;
+  /** Bottom-to-top, sorted by position. Possibly truncated — see `size`. */
+  entries: RemotePrEntry[];
+}
+
+/**
+ * Everything one GraphQL read learned about this repository.
+ *
+ * `supported: false` is the one failure worth distinguishing from an empty
+ * result: it means the API has never heard of `PullRequest.stack` — a GitHub
+ * Enterprise Server behind github.com — and the caller should fall back to
+ * `gh pr list` rather than lose the PR badges Restack has always shown.
+ */
+export interface GithubGraph {
+  /** Keyed by head branch, exactly like the `gh pr list` index it replaces. */
+  prs: Map<string, BranchPr>;
+  /** Keyed by GitHub stack number. */
+  stacks: Map<number, RemoteStack>;
+  supported: boolean;
+  /** Stack numbers whose entry list was cut off by the query's page size. */
+  truncated: number[];
+}
+
+/**
+ * A stack that exists on GitHub and nowhere in this clone.
+ *
+ * The case neither `gh stack view` nor `.git/gh-stack` can see: a colleague's
+ * stack, or your own from another machine. Offered for checkout rather than
+ * rendered in detail — `gh stack checkout <pr>` is what materializes one
+ * locally, and once it has, the ordinary local path describes it in full.
+ */
+export interface RemoteStackSummary {
+  number: number;
+  baseRefName: string;
+  /** Bottom-to-top. */
+  entries: RemotePrEntry[];
+  /**
+   * The PR number to hand `gh stack checkout`. The bottom-most one still open:
+   * checkout resolves a stack from any of its PRs, and a merged one may have
+   * had its branch deleted on the remote.
+   */
+  checkoutPr: number;
+}
+
+/**
+ * How a local stack differs from the GitHub stack it is matched to.
+ *
+ * Two directions, and they mean different things. `onlyRemote` is the reason
+ * this exists: a PR someone appended to your stack on GitHub, which this clone
+ * has no branch for and no other part of Restack can see. `onlyLocal` is
+ * ordinary — a branch not yet submitted is the normal state of the top of a
+ * stack — so it is reported without being called a problem.
+ */
+export interface StackDivergence {
+  /** Head refs in the GitHub stack with no local branch. */
+  onlyRemote: string[];
+  /** Local branches with no entry in the GitHub stack. */
+  onlyLocal: string[];
 }
 
 /**
@@ -227,6 +318,14 @@ export interface StackSummary extends LocalStackSummary {
   ahead: number;
   /** Remote commits we do not have. Non-zero is what blocks a rewrite. */
   behind: number;
+  /**
+   * The GitHub stack this one's PRs belong to. Absent when the stack has no
+   * PRs yet, when GitHub has not been asked, or when its branches point at
+   * more than one GitHub stack — see matchRemoteStack.
+   */
+  remoteStackNumber?: number;
+  /** Set only alongside `remoteStackNumber`, and only when non-empty. */
+  divergence?: StackDivergence;
 }
 
 /** Discriminated result of reading the stack, so the UI can render each case. */
@@ -270,6 +369,12 @@ export type HostMessage =
        * one. Empty in a repository with no stacks at all.
        */
       stacks: StackSummary[];
+      /**
+       * Stacks GitHub knows about that this clone does not. Empty until the
+       * deferred GraphQL read lands, and empty forever when there is no
+       * remote, no auth, or `restack.readRemoteStacks` is off.
+       */
+      remoteStacks: RemoteStackSummary[];
     }
   | { type: 'plan'; plan: Plan }
   | { type: 'loading' }
@@ -358,6 +463,13 @@ export type WebviewMessage =
    * per-stack button has always done.
    */
   | { type: 'switchStack'; index: number }
+  /**
+   * Materialize a stack that exists only on GitHub: `gh stack checkout <pr>`.
+   *
+   * Unlike `switchStack`, which is a local checkout, this reaches the network,
+   * creates branches, and writes `.git/gh-stack` — so the host confirms first.
+   */
+  | { type: 'checkoutRemoteStack'; pr: number }
   /**
    * Start a stack alongside the ones already here.
    *

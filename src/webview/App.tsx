@@ -21,12 +21,15 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import type {
   ApplyProgress,
+  BranchPr,
   CandidateBranch,
   HostMessage,
   Plan,
+  RemoteStackSummary,
   RemoteState,
   Stack,
   StackBranch,
+  StackDivergence,
   StackResult,
   StackSummary,
   Tracking,
@@ -126,6 +129,36 @@ function TrackingBadge({ tracking }: { tracking?: Tracking }) {
     );
   }
   return null;
+}
+
+/**
+ * The branch this row's PR targets on GitHub, when it is not the one below it
+ * here.
+ *
+ * A gap nothing else on this screen can show. gh-stack records a base *SHA*
+ * locally and never reads the PR's own `baseRefName`, so a base retargeted on
+ * the server — by a colleague, by a merge queue, by GitHub itself when a
+ * parent PR closes — leaves the local view complete and wrong. The PR would
+ * merge into somewhere other than the row underneath it.
+ *
+ * Silent in the ordinary case, like every other badge here: `expected` is the
+ * branch below, or the trunk for the bottom row, and matching it renders
+ * nothing.
+ */
+function PrBaseBadge({ pr, expected }: { pr?: BranchPr; expected: string }) {
+  const base = pr?.baseRefName;
+  if (!base || base === expected) {
+    return null;
+  }
+
+  return (
+    <span
+      className="badge badge--pr-base"
+      title={`On GitHub, #${pr.number} targets ${base} — not ${expected}, the branch it sits on here. Submitting the stack retargets it.`}
+    >
+      PR base: {base}
+    </span>
+  );
 }
 
 /** Droppable id for the tray, distinct from any branch name. */
@@ -793,6 +826,55 @@ function PrBadge({ number, state, isDraft }: { number: number; state: string; is
 }
 
 /**
+ * The GitHub stack number a local stack is matched to.
+ *
+ * Distinct from the switcher's own `index`, which is this clone's position in
+ * `.git/gh-stack` and means nothing to anyone else. This one is the number in
+ * the GitHub stack UI — the shared name for the thing, and the argument
+ * `gh stack link` takes.
+ */
+function RemoteStackBadge({ number, size }: { number: number; size?: number }) {
+  return (
+    <span
+      className="switcher__remote"
+      title={`GitHub stack ${number}${size ? `, ${size} pull request${size === 1 ? '' : 's'}` : ''} — the number shown in the GitHub stack UI, shared with everyone else looking at it.`}
+    >
+      ⧉{number}
+    </span>
+  );
+}
+
+/**
+ * A local stack and its GitHub counterpart holding different PRs.
+ *
+ * Only `onlyRemote` is worth a warning. A PR added to the stack on GitHub has
+ * no branch in this clone, and nothing else in Restack can see it — the local
+ * view is complete and wrong. `onlyLocal` is the ordinary state of a branch not
+ * yet submitted, so it is mentioned in the tooltip and never coloured.
+ */
+function DivergenceBadge({ divergence }: { divergence: StackDivergence }) {
+  const { onlyRemote, onlyLocal } = divergence;
+  if (onlyRemote.length === 0) {
+    return null;
+  }
+
+  return (
+    <span
+      className="switcher__diverged"
+      title={
+        `On GitHub this stack also holds ${onlyRemote.join(', ')}, which this clone has no branch for. ` +
+        `Run \`gh stack sync\` to pull them down.` +
+        (onlyLocal.length > 0
+          ? `\n\nNot yet on GitHub: ${onlyLocal.join(', ')} — ordinary for a branch you have not submitted.`
+          : '')
+      }
+    >
+      +{onlyRemote.length} on GitHub
+    </span>
+  );
+}
+
+/**
  * One row in the switcher: a stack, its branches, and where its PRs stand.
  *
  * Branches read top-down here as everywhere else, with the trunk last — the
@@ -830,6 +912,8 @@ function StackRow({ stack, onSwitch }: { stack: StackSummary; onSwitch: () => vo
             ↓{stack.behind}
           </span>
         )}
+        {stack.remoteStackNumber && <RemoteStackBadge number={stack.remoteStackNumber} />}
+        {stack.divergence && <DivergenceBadge divergence={stack.divergence} />}
       </span>
 
       {stack.isActive ? (
@@ -911,6 +995,83 @@ function StackSwitcher({ stacks }: { stacks: StackSummary[] }) {
 }
 
 /**
+ * A stack that exists on GitHub and not in this clone.
+ *
+ * Rendered in the same grammar as StackRow — top-down, arrows, PR badges, a
+ * check-out button on the right — because it is the same kind of thing seen
+ * from further away. What it cannot show is everything that needs local refs:
+ * no ahead/behind, no HEAD marker, no trunk, since the base is a ref name this
+ * clone may not have.
+ */
+function RemoteStackRow({ stack }: { stack: RemoteStackSummary }) {
+  const topDown = [...stack.entries].reverse();
+
+  return (
+    <li className="stacks__item stacks__item--remote">
+      <span className="switcher__number" aria-hidden="true">
+        ⧉ {stack.number}
+      </span>
+
+      <span className="stacks__path">
+        {topDown.map((entry, i) => (
+          <span key={entry.number}>
+            {i > 0 && <span className="stacks__arrow"> ← </span>}
+            <span>{entry.headRefName}</span>
+            <PrBadge number={entry.number} state={entry.state} isDraft={false} />
+          </span>
+        ))}
+        {stack.baseRefName && (
+          <>
+            <span className="stacks__arrow"> ← </span>
+            <span className="stacks__trunk">{stack.baseRefName}</span>
+          </>
+        )}
+      </span>
+
+      <button
+        type="button"
+        onClick={() =>
+          vscodeApi.postMessage({ type: 'checkoutRemoteStack', pr: stack.checkoutPr })
+        }
+        title={`Run gh stack checkout ${stack.checkoutPr} — fetches every branch in this stack, records it locally, and checks out the top. Nothing on GitHub changes.`}
+      >
+        Check out
+      </button>
+    </li>
+  );
+}
+
+/**
+ * Stacks on GitHub with no counterpart here — a colleague's, or your own from
+ * another machine.
+ *
+ * The case neither `gh stack view` nor `.git/gh-stack` can see, and so the one
+ * thing on this screen that could not be there before. Renders nothing when
+ * there are none, which is the common repository: a solo project pays no
+ * chrome for a feature it does not use.
+ */
+function RemoteStackList({ stacks }: { stacks: RemoteStackSummary[] }) {
+  if (stacks.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="stacks stacks--remote">
+      <h2 className="column__title">On GitHub only</h2>
+      <p className="stacks__hint">
+        {stacks.length === 1 ? 'One stack' : `${stacks.length} stacks`} on the remote that this
+        clone has no branches for. Checking one out fetches its branches and starts tracking it.
+      </p>
+      <ul className="stacks__list">
+        {stacks.map((s) => (
+          <RemoteStackRow key={s.number} stack={s} />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
  * The empty state, for a repository with no stack under the current branch.
  *
  * Built from the same drag machinery as the reorder view rather than a native
@@ -929,6 +1090,7 @@ function InitView({
   localBranches,
   remoteBranches,
   stacks,
+  remoteStacks,
   candidates,
 }: {
   message: string;
@@ -937,6 +1099,8 @@ function InitView({
   /** Qualified remote refs (`origin/their-work`), offered as a base of their own. */
   remoteBranches: string[];
   stacks: StackSummary[];
+  /** Stacks on GitHub only. The most useful thing an empty repository can offer. */
+  remoteStacks: RemoteStackSummary[];
   candidates: CandidateBranch[];
 }) {
   const [trunk, setTrunk] = useState(detectedTrunk ?? 'main');
@@ -1085,6 +1249,14 @@ function InitView({
       ) : (
         <Message title="No stack yet" body={message} />
       )}
+
+      {/*
+        Most valuable exactly here. A fresh clone has nothing in
+        `.git/gh-stack`, so this screen used to offer only "create a stack" to
+        someone whose stack already exists — on GitHub, made from another
+        machine or by a colleague.
+      */}
+      <RemoteStackList stacks={remoteStacks} />
 
       <section className="init">
         <h2 className="column__title">
@@ -1248,6 +1420,8 @@ export function App() {
   const [remote, setRemote] = useState<RemoteState | null>(null);
   /** Every stack in the repository, for the switcher. Empty when there are none. */
   const [stacks, setStacks] = useState<StackSummary[]>([]);
+  /** Stacks on GitHub this clone has no branches for. Empty until asked. */
+  const [remoteStacks, setRemoteStacks] = useState<RemoteStackSummary[]>([]);
   const [dragging, setDragging] = useState<string | null>(null);
 
   const sensors = useSensors(
@@ -1271,6 +1445,9 @@ export function App() {
         setCanPublish(message.canPublish);
         setRemote(message.remote ?? null);
         setStacks(message.stacks);
+        // Defaulted, not read straight through: the screenshot harness posts
+        // this message by hand and predates the field.
+        setRemoteStacks(message.remoteStacks ?? []);
         setDisplayOrder(
           message.result.kind === 'ok'
             ? toDisplayOrder(message.result.stack.branches.map((b) => b.name))
@@ -1332,6 +1509,32 @@ export function App() {
     () => new Map(currentDisplay.map((name, i) => [name, i])),
     [currentDisplay],
   );
+
+  /**
+   * The PRs of the stack we are standing in, keyed by branch — the only place
+   * `baseRefName` reaches the view.
+   *
+   * Taken from the switcher's own summaries rather than a field of its own on
+   * the stack message: `readStackSummaries` already matched every branch in
+   * every stack against GitHub, and the active one is in there by definition.
+   */
+  const activePrs = useMemo(
+    () => stacks.find((s) => s.isActive)?.prs ?? {},
+    [stacks],
+  );
+
+  /**
+   * The branch each row's PR *should* be targeting: the one below it, or the
+   * trunk for the bottom of the stack. Built from the current order, not the
+   * proposed one — a pending reorder describes a future the PRs have not been
+   * retargeted to yet, and flagging every row mid-drag would say nothing.
+   */
+  const expectedBaseByName = useMemo(() => {
+    const bottomUp = (stack?.branches ?? []).map((b) => b.name);
+    return new Map(
+      bottomUp.map((name, i) => [name, i === 0 ? (stack?.trunk ?? '') : bottomUp[i - 1]]),
+    );
+  }, [stack]);
 
   /**
    * Where HEAD is. `currentBranch` and `isCurrent` come straight from
@@ -1503,6 +1706,7 @@ export function App() {
         localBranches={result.localBranches ?? []}
         remoteBranches={result.remoteBranches ?? []}
         stacks={stacks}
+        remoteStacks={remoteStacks}
         candidates={candidates}
       />
     );
@@ -1561,6 +1765,7 @@ export function App() {
   return (
     <div className="app">
       <StackSwitcher stacks={stacks} />
+      <RemoteStackList stacks={remoteStacks} />
 
       <div className="toolbar">
         <button
@@ -1750,6 +1955,10 @@ export function App() {
                   {/* Only on this column: the proposed one describes a future
                       state, and these counts are about the present. */}
                   <TrackingBadge tracking={trackingByName.get(name)} />
+                  <PrBaseBadge
+                    pr={activePrs[name]}
+                    expected={expectedBaseByName.get(name) ?? stack.trunk}
+                  />
                   {!branch.isCurrent && <CheckoutButton branch={name} disabled={busy} />}
                 </li>
               ) : null;
