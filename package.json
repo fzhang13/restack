@@ -183,6 +183,7 @@
     "test": "node --test --experimental-strip-types test/*.test.ts",
     "media": "node media/build-icon.mjs && npm run build && node test/harness/build-driver.mjs && node media/build-screenshot.mjs && node media/build-init-screenshot.mjs && node media/build-remote-screenshot.mjs && node media/build-switcher-screenshot.mjs && node media/build-github-screenshot.mjs",
     "package": "vsce package",
+    "publish": "node scripts/publish.mjs",
     "publish:vsce": "vsce publish",
     "publish:ovsx": "ovsx publish",
     "vscode:prepublish": "npm run typecheck && npm test && npm run build -- --production"

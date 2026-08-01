@@ -1,0 +1,75 @@
+# Cuts a GitHub Release when a v* tag is pushed.
+#
+# Deliberately does NOT publish to the VS Code Marketplace or Open VSX: neither
+# registry lets you unpublish a version, so that step stays manual. See
+# "Publishing" in README.md for the full sequence.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write # required to create the release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # The tag is the source of truth for what is being released; if
+      # package.json disagrees, the .vsix would carry a different version than
+      # the release it is attached to.
+      - name: Check the tag matches package.json
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="$(node -p "require('./package.json').version")"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "Tag $GITHUB_REF_NAME implies version $tag_version, but package.json says $pkg_version." >&2
+            exit 1
+          fi
+          echo "version=$tag_version" >> "$GITHUB_OUTPUT"
+        id: version
+
+      # Fail before building rather than after, so a forgotten changelog entry
+      # costs seconds instead of a full package run.
+      - name: Extract the changelog section
+        run: node scripts/changelog-section.mjs "${{ steps.version.outputs.version }}" > release-notes.md
+
+      - run: npm run typecheck
+
+      - run: npm test
+
+      # vsce runs vscode:prepublish itself, which repeats typecheck and test.
+      # That is a minute of duplicated work and worth it: it is the same code
+      # path a local `npm run package` takes, so CI cannot pass on something
+      # that would fail on your laptop.
+      - name: Package the extension
+        run: npx vsce package --out "restack-${{ steps.version.outputs.version }}.vsix"
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release-notes.md \
+            --verify-tag \
+            "restack-${{ steps.version.outputs.version }}.vsix"
+
+      # So the publish step can ship the exact bytes CI built and attached,
+      # rather than a local rebuild.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: restack-${{ steps.version.outputs.version }}.vsix
+          path: restack-${{ steps.version.outputs.version }}.vsix
