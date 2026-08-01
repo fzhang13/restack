@@ -274,7 +274,15 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
           break;
         case 'applyAbort':
         case 'applyUndo':
-          void this.guard(() => this.runner.abort());
+          // Refreshed like every other operation that moves refs. A rollback
+          // puts the branches and .git/gh-stack back, but nothing re-reads
+          // them, so the rows would keep rendering the order the apply
+          // produced — the repository restored and the view still showing the
+          // change undone.
+          void this.guard(async () => {
+            await this.runner.abort();
+            await this.refresh();
+          });
           break;
         case 'applyDismiss':
           this.runner.dismiss();
