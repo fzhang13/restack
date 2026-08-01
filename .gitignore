@@ -3,6 +3,7 @@ dist/
 *.vsix
 .DS_Store
 .env
+.claude/
 
 # Scratch repos with their own .git, used for manual testing only.
 sandbox/
