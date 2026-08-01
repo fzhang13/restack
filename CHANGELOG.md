@@ -42,6 +42,29 @@
   channel and change the child environment, which is a behaviour change and not
   this one.
 
+### Fixed
+
+- **Rolling back reported a failure for a rollback that worked.** The plan panel
+  renders Roll back from `phase: 'failed'` plus `canUndo`, and the rollback
+  emitted exactly that pair on its way out — so the button came back for a
+  session it had just cleared, and pressing it a second time answered
+  `Restack: No apply in progress.` Nothing had gone wrong; the panel was
+  offering to undo an undo, and the honest answer to that read as an error. The
+  final state now says `canUndo: false`, so a finished rollback offers Show log
+  and Dismiss and nothing else.
+
+- **The rows kept showing the order the apply produced, after undoing it.**
+  Rolling back puts the branches and `.git/gh-stack` back exactly as they were
+  — that part was always covered by tests — but nothing re-read them
+  afterwards. Every other operation that moves refs refreshes; abort was the one
+  that did not, so the repository was restored while the panel still rendered
+  the change that had just been taken back, with no way to tell the undo had
+  landed short of reloading the window. Abort now refreshes like the rest.
+
+  The restore itself is covered by tests; whether the view then re-reads it is
+  the provider's, which has no automated coverage — so that half was verified by
+  hand against `sandbox/`.
+
 ## 0.5.0
 
 ### Added

@@ -133,6 +133,36 @@ test('abort restores every branch and the metadata byte for byte', async (t) => 
   assert.equal(runner.active, false);
 });
 
+// The abort above unwinds a plan that stopped at a conflict, so the metadata
+// write never ran and the recorded order was never the new one. Undo after a
+// *clean* apply is the other path: the order on disk really did change, and
+// putting it back is the whole point of the button.
+//
+// Covers the restore only. Whether the view then re-reads it is the provider's
+// refresh, which has no automated coverage — see the F5 pass on sandbox/.
+test('undoing a completed apply puts the recorded order back', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const before = metadataOrder(cwd);
+  const stack = readStackFrom(cwd);
+  const next = ['feat/api', 'feat/ui', 'feat/auth'];
+
+  const { runner, states } = collect();
+  await runner.start(cwd, 'gh', stack, computePlan(stack, next), next, 'local');
+
+  // The apply landed, so the reorder is real before it is taken back.
+  assert.equal(states.at(-1)!.phase, 'done');
+  assert.deepEqual(metadataOrder(cwd), next);
+
+  await runner.abort();
+
+  assert.deepEqual(metadataOrder(cwd), before);
+  // And the stack a fresh read reports, which is what the view renders from.
+  assert.deepEqual(readStackFrom(cwd).branches.map((b) => b.name), before);
+  assert.equal(runner.active, false);
+});
+
 test('resolving a conflict and continuing finishes the plan', async (t) => {
   const cwd = makeRepo({ sharedFile: true });
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
