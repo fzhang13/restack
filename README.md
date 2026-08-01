@@ -576,15 +576,36 @@ One-time setup:
 
 The publisher name in both must match `publisher` in `package.json`.
 
+Releasing is two halves. Pushing a `v*` tag runs
+[`.github/workflows/release.yml`](.github/workflows/release.yml), which
+typechecks, tests, packages, and creates the GitHub release with the matching
+`CHANGELOG.md` section as its notes and the `.vsix` attached. Publishing to the
+registries stays manual, because neither of them lets you unpublish a version —
+a bad tag can be deleted and re-cut, a bad publish is permanent.
+
 ```bash
-npm version minor               # or patch; bump + tag, CHANGELOG.md first
-npm run publish:vsce
-npm run publish:ovsx -- --packagePath restack-<version>.vsix
-git push --follow-tags
+# 1. CHANGELOG.md first: add a `## <version>` section. The workflow reads it,
+#    and fails the release if it is missing.
+npm version minor               # or patch; bumps package.json and tags
+git push --follow-tags          # -> the workflow builds and cuts the release
 ```
 
-Publishing the packaged `.vsix` to Open VSX rather than letting it rebuild is
-deliberate: both registries then serve bytes that were tested here.
+The workflow refuses to run if the tag and `package.json` disagree, so a
+hand-written tag cannot ship a `.vsix` labelled with a different version.
+
+```bash
+# 2. Once the release looks right, publish the exact bytes it attached.
+gh release download v<version>  # the CI-built .vsix
+npm run publish -- restack-<version>.vsix
+```
+
+Publishing the packaged `.vsix` rather than letting each registry rebuild is
+deliberate: both then serve bytes that were tested here, and CI's artifact is
+the same file the release page offers.
+
+To release without the workflow — a local `npm run package` followed by
+`npm run publish` — works the same way; `npm run publish` defaults to
+`restack-<package.json version>.vsix` in the working directory.
 
 ## Status
 
