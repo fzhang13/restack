@@ -549,76 +549,16 @@ interactive rather than a still: clicking **Resolve** marks the file staged and
 re-emits after a beat, standing in for the merge editor and the index watcher, so
 the gating on *Continue* can be exercised with no repository behind it.
 
-### Publishing
+### Releasing
 
-Two registries, because Cursor cannot install from the VS Code Marketplace —
-its terms restrict it to Microsoft products, so Cursor and the other forks pull
-from [Open VSX](https://open-vsx.org). Publishing to only one leaves half the
-audience out, and the same `.vsix` goes to both.
+Restack ships to both the VS Code Marketplace and Open VSX — Cursor and the
+other forks cannot install from the Marketplace, so shipping to one leaves half
+the audience behind. A tag push cuts the GitHub release; sending it to the
+registries is a separate, hand-started workflow behind an approval gate,
+because neither registry lets you unpublish a version.
 
-`vscode:prepublish` runs typecheck, the test suite, and a production build, so
-`vsce package` cannot ship a bundle that does not compile or pass tests.
-
-```bash
-npm run package                 # -> restack-<version>.vsix, inspect before publishing
-npx vsce ls --tree              # exactly what is inside it
-```
-
-One-time setup:
-
-- **Marketplace** — create a publisher at
-  [marketplace.visualstudio.com/manage](https://marketplace.visualstudio.com/manage),
-  then an Azure DevOps PAT scoped to *Marketplace → Manage*, all organizations.
-  `npx vsce login felixzhang`.
-- **Open VSX** — sign in at [open-vsx.org](https://open-vsx.org) with GitHub,
-  sign the publisher agreement, and create an access token. Export it as
-  `OVSX_PAT`.
-
-The publisher name in both must match `publisher` in `package.json`.
-
-Releasing is two halves. Pushing a `v*` tag runs
-[`.github/workflows/release.yml`](.github/workflows/release.yml), which
-typechecks, tests, packages, and creates the GitHub release with the matching
-`CHANGELOG.md` section as its notes and the `.vsix` attached. Sending that
-release to the registries is a second, hand-started workflow — neither registry
-lets you unpublish a version, so a tag push must never be able to ship one. A
-bad tag can be deleted and re-cut; a bad publish is permanent.
-
-```bash
-# 1. CHANGELOG.md first: add a `## <version>` section. The workflow reads it,
-#    and fails the release if it is missing.
-npm version minor               # or patch; bumps package.json and tags
-git push --follow-tags          # -> the workflow builds and cuts the release
-```
-
-The workflow refuses to run if the tag and `package.json` disagree, so a
-hand-written tag cannot ship a `.vsix` labelled with a different version.
-
-Then **Actions → Publish → Run workflow**, with the tag. That runs
-[`publish.yml`](.github/workflows/publish.yml) in two jobs with an approval gate
-between them. The first has no side effects: it downloads the `.vsix` the
-release actually offers and runs `scripts/preflight-publish.mjs`, which checks
-the artifact's internal version against the tag, looks for files that should not
-ship, asks both registries whether the version is already live, and confirms
-both tokens are present. The gate comes after, so approval is given against a
-summary that has already been verified — and an expired token fails before the
-prompt rather than halfway through the release. Tick `dry_run` to stop there.
-
-The gate requires a `publish` environment with required reviewers under
-**Settings → Environments**, holding `VSCE_PAT` and `OVSX_PAT` as environment
-secrets. Without that environment the job runs unattended, so keep it in place.
-
-Publishing by hand takes the same path:
-
-```bash
-gh release download v<version>  # the CI-built .vsix
-npm run publish -- restack-<version>.vsix
-```
-
-Publishing the packaged `.vsix` rather than letting each registry rebuild is
-deliberate: both then serve bytes that were tested here, and CI's artifact is
-the same file the release page offers. `npm run publish` with no argument
-defaults to `restack-<package.json version>.vsix` in the working directory.
+The full procedure, token setup, and the reasoning behind the split are in
+[docs/RELEASING.md](docs/RELEASING.md).
 
 ## Status
 

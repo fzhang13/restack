@@ -11,6 +11,8 @@
 // error in particular reads as a permissions problem rather than a conflict,
 // which is a bad thing to debug with half a release out the door.
 //
+// Credentials are not checked here — see the note above the report section.
+//
 // Writes a markdown summary to $GITHUB_STEP_SUMMARY when running in Actions.
 
 import { existsSync, readFileSync, appendFileSync } from 'node:fs';
@@ -143,17 +145,13 @@ try {
   bad(`Could not check Open VSX: ${error.message}`);
 }
 
-// --- credentials ------------------------------------------------------------
-
-// Checked here rather than at publish time so an expired token fails before
-// anyone is asked to approve, instead of halfway through the release.
-for (const name of ['VSCE_PAT', 'OVSX_PAT']) {
-  if (!process.env[name]?.trim()) {
-    bad(`${name} is empty or unset. Add it as an environment secret on the "publish" environment.`);
-  } else {
-    ok(`${name} is present.`);
-  }
-}
+// Credentials are deliberately not checked here. VSCE_PAT and OVSX_PAT are
+// environment secrets on `publish`, and GitHub only exposes those to a job that
+// declares that environment — which is the gated one. A job that could read
+// them would have to trip the approval prompt before running these checks,
+// which is exactly backwards. scripts/verify-pats.mjs runs inside the gated job
+// instead, and asks the registries whether the tokens actually work rather than
+// whether the strings are non-empty.
 
 // --- report -----------------------------------------------------------------
 
