@@ -1,0 +1,40 @@
+/* The base of the graph: the rail runs down from the last branch into trunk. */
+.trunk {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 7px 0 5px;
+  font-size: 11px;
+}
+
+/* Dim only the label — an opacity on `.trunk` would fade its rail segment too
+   and leave a visible seam where it meets the last branch's. */
+.trunk__name {
+  font-family: var(--vscode-editor-font-family, monospace);
+  opacity: 0.7;
+}
+
+/* The trunk box begins exactly where `.rows` ends, so the rail picks up at 0
+   and runs down to the trunk node's centre. */
+.trunk::before {
+  content: '';
+  position: absolute;
+  left: calc(var(--rail-x) - 0.5px);
+  top: 0;
+  height: calc(50% + 2.5px);
+  width: 1px;
+  background: var(--vscode-widget-border, rgba(127, 127, 127, 0.45));
+}
+
+.trunk__node {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  /* Centre on the rail, then pad the right so the trunk label lines up with the
+     branch names above it despite this node being smaller. */
+  margin-left: calc(var(--rail-x) - 2.5px - 5px);
+  margin-right: 2px;
+  border-radius: 50%;
+  background: var(--vscode-widget-border, rgba(127, 127, 127, 0.7));
+}
