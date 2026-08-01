@@ -1,0 +1,280 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        },
+        "nodes": [
+          {
+            "number": 13988,
+            "headRefName": "williammartin-fix-restwithnext-error-type",
+            "baseRefName": "trunk",
+            "title": "Fix `RESTWithNext` error type, repairing `gh status` and attestation retries",
+            "url": "https://github.com/cli/cli/pull/13988",
+            "state": "OPEN",
+            "isDraft": false,
+            "stack": {
+              "number": 14025,
+              "size": 5,
+              "baseRefName": "trunk",
+              "entries": {
+                "totalCount": 5,
+                "nodes": [
+                  {
+                    "position": 1,
+                    "pullRequest": {
+                      "number": 13988,
+                      "headRefName": "williammartin-fix-restwithnext-error-type",
+                      "state": "OPEN"
+                    }
+                  },
+                  {
+                    "position": 2,
+                    "pullRequest": {
+                      "number": 13989,
+                      "headRefName": "williammartin-wp-01-deploy-key-api-client",
+                      "state": "OPEN"
+                    }
+                  },
+                  {
+                    "position": 3,
+                    "pullRequest": {
+                      "number": 13994,
+                      "headRefName": "williammartin-route-ssh-key-api-client",
+                      "state": "OPEN"
+                    }
+                  },
+                  {
+                    "position": 4,
+                    "pullRequest": {
+                      "number": 13997,
+                      "headRefName": "williammartin-route-gpg-key-api",
+                      "state": "OPEN"
+                    }
+                  },
+                  {
+                    "position": 5,
+                    "pullRequest": {
+                      "number": 14013,
+                      "headRefName": "williammartin-migrate-repo-autolink",
+                      "state": "OPEN"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "number": 13997,
+            "headRefName": "williammartin-route-gpg-key-api",
+            "baseRefName": "williammartin-route-ssh-key-api-client",
+            "title": "Route gpg key requests through api.Client",
+            "url": "https://github.com/cli/cli/pull/13997",
+            "state": "OPEN",
+            "isDraft": false,
+            "stack": {
+              "number": 14025,
+              "size": 5,
+              "baseRefName": "trunk",
+              "entries": {
+                "totalCount": 5,
+                "nodes": [
+                  {
+                    "position": 1,
+                    "pullRequest": {
+                      "number": 13988,
+                      "headRefName": "williammartin-fix-restwithnext-error-type",
+                      "state": "OPEN"
+                    }
+                  },
+                  {
+                    "position": 2,
+                    "pullRequest": {
+                      "number": 13989,
+                      "headRefName": "williammartin-wp-01-deploy-key-api-client",
+                      "state": "OPEN"
+                    }
+                  },
+                  {
+                    "position": 3,
+                    "pullRequest": {
+                      "number": 13994,
+                      "headRefName": "williammartin-route-ssh-key-api-client",
+                      "state": "OPEN"
+                    }
+                  },
+                  {
+                    "position": 4,
+                    "pullRequest": {
+                      "number": 13997,
+                      "headRefName": "williammartin-route-gpg-key-api",
+                      "state": "OPEN"
+                    }
+                  },
+                  {
+                    "position": 5,
+                    "pullRequest": {
+                      "number": 14013,
+                      "headRefName": "williammartin-migrate-repo-autolink",
+                      "state": "OPEN"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "number": 13994,
+            "headRefName": "williammartin-route-ssh-key-api-client",
+            "baseRefName": "williammartin-wp-01-deploy-key-api-client",
+            "title": "Route ssh key requests through api.Client",
+            "url": "https://github.com/cli/cli/pull/13994",
+            "state": "OPEN",
+            "isDraft": false,
+            "stack": {
+              "number": 14025,
+              "size": 5,
+              "baseRefName": "trunk",
+              "entries": {
+                "totalCount": 5,
+                "nodes": [
+                  {
+                    "position": 1,
+                    "pullRequest": {
+                      "number": 13988,
+                      "headRefName": "williammartin-fix-restwithnext-error-type",
+                      "state": "OPEN"
+                    }
+                  },
+                  {
+                    "position": 2,
+                    "pullRequest": {
+                      "number": 13989,
+                      "headRefName": "williammartin-wp-01-deploy-key-api-client",
+                      "state": "OPEN"
+                    }
+                  },
+                  {
+                    "position": 3,
+                    "pullRequest": {
+                      "number": 13994,
+                      "headRefName": "williammartin-route-ssh-key-api-client",
+                      "state": "OPEN"
+                    }
+                  },
+                  {
+                    "position": 4,
+                    "pullRequest": {
+                      "number": 13997,
+                      "headRefName": "williammartin-route-gpg-key-api",
+                      "state": "OPEN"
+                    }
+                  },
+                  {
+                    "position": 5,
+                    "pullRequest": {
+                      "number": 14013,
+                      "headRefName": "williammartin-migrate-repo-autolink",
+                      "state": "OPEN"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "number": 13989,
+            "headRefName": "williammartin-wp-01-deploy-key-api-client",
+            "baseRefName": "williammartin-fix-restwithnext-error-type",
+            "title": "Route deploy key requests through api.Client",
+            "url": "https://github.com/cli/cli/pull/13989",
+            "state": "OPEN",
+            "isDraft": false,
+            "stack": {
+              "number": 14025,
+              "size": 5,
+              "baseRefName": "trunk",
+              "entries": {
+                "totalCount": 5,
+                "nodes": [
+                  {
+                    "position": 1,
+                    "pullRequest": {
+                      "number": 13988,
+                      "headRefName": "williammartin-fix-restwithnext-error-type",
+                      "state": "OPEN"
+                    }
+                  },
+                  {
+                    "position": 2,
+                    "pullRequest": {
+                      "number": 13989,
+                      "headRefName": "williammartin-wp-01-deploy-key-api-client",
+                      "state": "OPEN"
+                    }
+                  },
+                  {
+                    "position": 3,
+                    "pullRequest": {
+                      "number": 13994,
+                      "headRefName": "williammartin-route-ssh-key-api-client",
+                      "state": "OPEN"
+                    }
+                  },
+                  {
+                    "position": 4,
+                    "pullRequest": {
+                      "number": 13997,
+                      "headRefName": "williammartin-route-gpg-key-api",
+                      "state": "OPEN"
+                    }
+                  },
+                  {
+                    "position": 5,
+                    "pullRequest": {
+                      "number": 14013,
+                      "headRefName": "williammartin-migrate-repo-autolink",
+                      "state": "OPEN"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          {
+            "number": 13282,
+            "headRefName": "fix/pr-edit-conditional-project-fetch",
+            "baseRefName": "trunk",
+            "title": "Only fetch project data in pr edit when editing projects",
+            "url": "https://github.com/cli/cli/pull/13282",
+            "state": "CLOSED",
+            "isDraft": false,
+            "stack": null
+          },
+          {
+            "number": 13760,
+            "headRefName": "api-host-transport-rewrite",
+            "baseRefName": "trunk",
+            "title": "Add per-host api_host override for custom API endpoint routing",
+            "url": "https://github.com/cli/cli/pull/13760",
+            "state": "CLOSED",
+            "isDraft": false,
+            "stack": null
+          },
+          {
+            "number": 13400,
+            "headRefName": "wm-uber-auth-schema",
+            "baseRefName": "trunk",
+            "title": "Add `bearer_auth` config toggle for Authorization scheme",
+            "url": "https://github.com/cli/cli/pull/13400",
+            "state": "OPEN",
+            "isDraft": false,
+            "stack": null
+          }
+        ]
+      }
+    }
+  }
+}

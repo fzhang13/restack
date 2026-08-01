@@ -1,0 +1,232 @@
+.plan {
+  border-top: 1px solid var(--vscode-widget-border, rgba(127, 127, 127, 0.3));
+  padding-top: 10px;
+}
+
+.plan--empty {
+  opacity: 0.6;
+  font-size: 12px;
+}
+
+.plan__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.plan__header h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.plan__count {
+  opacity: 0.55;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.plan__notice {
+  margin: 6px 0 8px;
+  font-size: 11px;
+  opacity: 0.65;
+}
+
+.steps {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  counter-reset: step;
+}
+
+.step {
+  counter-increment: step;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 20px;
+  position: relative;
+}
+
+.step::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 1px;
+  font-size: 10px;
+  opacity: 0.5;
+}
+
+.step code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--vscode-textPreformat-foreground);
+}
+
+.step__note {
+  font-size: 10px;
+  opacity: 0.55;
+}
+
+.apply {
+  align-self: flex-start;
+}
+
+.step--metadata code {
+  opacity: 0.75;
+  font-style: italic;
+}
+
+.step--done code,
+.step--running code,
+.step--failed code,
+.step--skipped code {
+  opacity: 1;
+}
+
+.step--pending,
+.step--skipped {
+  opacity: 0.45;
+}
+
+.step--running .step__mark {
+  color: var(--vscode-progressBar-background, var(--vscode-focusBorder));
+}
+
+.step--done .step__mark {
+  color: var(--vscode-testing-iconPassed, #3fb950);
+}
+
+.step--failed .step__mark {
+  color: var(--vscode-testing-iconFailed, #f85149);
+}
+
+.step__mark {
+  font-weight: 600;
+}
+
+.applying {
+  margin-top: 4px;
+  padding: 8px;
+  border-radius: 3px;
+  border-left: 2px solid var(--vscode-focusBorder);
+  background: var(--vscode-editorWidget-background, rgba(127, 127, 127, 0.08));
+}
+
+.applying--conflict {
+  border-left-color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.applying--failed {
+  border-left-color: var(--vscode-editorError-foreground, #f85149);
+}
+
+.applying--done {
+  border-left-color: var(--vscode-testing-iconPassed, #3fb950);
+}
+
+.applying__message {
+  margin: 0;
+  font-size: 12px;
+}
+
+.conflicts {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.conflicts__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.conflicts__mark {
+  flex: 0 0 auto;
+  width: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.conflicts code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+/* Staged. Kept in the list rather than removed: a file that vanished the moment
+   it was resolved would take the record of having resolved it along too. */
+.conflicts__row--done .conflicts__mark,
+.conflicts__row--done code {
+  color: var(--vscode-testing-iconPassed, #3fb950);
+}
+
+.conflicts__row--done code {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+.conflicts__state {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+}
+
+/* Opens the three-way merge editor — the route that ends in a staged file, so
+   it leads rather than sits beside the plain-text link. */
+.conflicts__resolve {
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* Opens the file in the editor; styled as the path it is, not as a button. */
+.conflicts__file {
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.conflicts__file:hover:not(:disabled) {
+  background: none;
+}
+
+.conflicts__file:hover code {
+  text-decoration: underline;
+}
+
+.applying__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.applying__actions:empty {
+  display: none;
+}
+
+.publish {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+
+.publish:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}

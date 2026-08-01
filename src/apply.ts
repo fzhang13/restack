@@ -492,7 +492,15 @@ export class ApplyRunner {
       await run('git', ['checkout', '--force', '--quiet', snapshot.branch], cwd);
     }
 
-    this.publishProgress({ phase: 'failed', message: 'Rolled back. Every branch is back where it started.' });
+    // `canUndo: false` because the rollback just happened and the session is
+    // about to be cleared. Left true, the panel offers Roll back a second time
+    // for a session that no longer exists, and the click reports "No apply in
+    // progress." — which reads as a failure when nothing failed.
+    this.publishProgress({
+      phase: 'failed',
+      canUndo: false,
+      message: 'Rolled back. Every branch is back where it started.',
+    });
     this.clear();
   }
 

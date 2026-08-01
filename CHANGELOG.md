@@ -1,5 +1,135 @@
 # Changelog
 
+## 0.5.1
+
+### Changed
+
+- **Four oversized files split into modules.** No behaviour change — every
+  function kept its name, its signature, and the comment explaining it. This is
+  purely about being able to find things: `App.tsx` was 2034 lines and eighteen
+  components, so reaching `ApplyPanel` meant scrolling past nine others, and
+  `extension.ts` was 1897 lines of which ~1500 were one class, so adding a stack
+  operation meant landing in the middle of it.
+
+  - `src/webview/App.tsx` → **62 lines**, now only the loading and error gates.
+    The eighteen components moved to `components/`, the two full-screen views to
+    `views/`, the `useState` block and its message listener to
+    `hooks/useHostState.ts`, and the pure helpers to `lib/`.
+  - `src/extension.ts` → **36 lines**, now `activate`/`deactivate` and the
+    command registrations. `StackViewProvider` moved to `src/view/provider.ts`
+    and the nine stack operations to `src/view/operations/`, alongside the
+    confirmation modals, the QuickPick builders, and the git helpers.
+  - `src/webview/styles.css` → an index of nine `@import`s. Cut on line
+    boundaries rather than by concern: the source interleaves them, and
+    `.badge--new`, `.badge--pr-base`, and `.trunk--current` all depend on where
+    they sit in the cascade rather than on what they are named. esbuild inlines
+    the imports, so the emitted `dist/webview.css` is byte-identical.
+  - `test/apply.test.ts` → four suites (apply, session, preflight, sync-base)
+    over a shared `test/support/repo.ts`. Every test name is verbatim, so a
+    failure report still points at the same thing. 154 tests before and after.
+
+  The operations reach back into the provider through one narrow `Host`
+  interface rather than six arguments each, and the `lastX` fields stay private
+  behind getters — several operations deliberately re-read them after an
+  `await refresh()`, so they have to be live reads and not values captured at
+  call time. The "an apply is in progress" warning, previously copy-pasted eight
+  times, collapsed to one `blockedByApply` helper; both of its wordings survive,
+  since the one shown next to the plan panel points at buttons the other cannot
+  assume are on screen.
+
+  The bare `execFile` git helper moved as-is and was deliberately *not* switched
+  to `git.ts`'s logged `run()` — that would put every checkout in the output
+  channel and change the child environment, which is a behaviour change and not
+  this one.
+
+### Fixed
+
+- **Rolling back reported a failure for a rollback that worked.** The plan panel
+  renders Roll back from `phase: 'failed'` plus `canUndo`, and the rollback
+  emitted exactly that pair on its way out — so the button came back for a
+  session it had just cleared, and pressing it a second time answered
+  `Restack: No apply in progress.` Nothing had gone wrong; the panel was
+  offering to undo an undo, and the honest answer to that read as an error. The
+  final state now says `canUndo: false`, so a finished rollback offers Show log
+  and Dismiss and nothing else.
+
+- **The rows kept showing the order the apply produced, after undoing it.**
+  Rolling back puts the branches and `.git/gh-stack` back exactly as they were
+  — that part was always covered by tests — but nothing re-read them
+  afterwards. Every other operation that moves refs refreshes; abort was the one
+  that did not, so the repository was restored while the panel still rendered
+  the change that had just been taken back, with no way to tell the undo had
+  landed short of reloading the window. Abort now refreshes like the rest.
+
+  The restore itself is covered by tests; whether the view then re-reads it is
+  the provider's, which has no automated coverage — so that half was verified by
+  hand against `sandbox/`.
+
+## 0.5.0
+
+### Added
+
+- **Stacks read from GitHub, not just from this clone.** Everything Restack knew
+  about stacks came from two local sources: `gh stack view`, which reports the
+  stack HEAD is standing in, and `.git/gh-stack`, which records the stacks *this
+  machine* has checked out. A stack that existed only on the server was
+  invisible to both — a colleague's, your own from another laptop, or a pull
+  request someone appended to your stack on GitHub while you were working.
+
+  GitHub's GraphQL API now models stacks natively (`PullRequest.stack`, with its
+  number, size, base, and ordered entries), so Restack asks for them in the call
+  that already fetched PR badges. That call was already authenticated and
+  already went out; it moved from `gh pr list --json` to `gh api graphql`, so
+  this costs one request rather than two, and needs no scope `gh` does not
+  already have. Three things come out of it:
+
+  - A **`⧉1204` badge** on a switcher row whose PRs all report the same GitHub
+    stack — the number everyone else sees, unlike the switcher's own index,
+    which is this clone's position in `.git/gh-stack` and means nothing to
+    anyone else. When the branches report *two* stacks the badge is omitted
+    rather than guessed at; that is the same ambiguity gh-stack refuses locally
+    with `branch %q belongs to multiple stacks`.
+  - A **`+1 on GitHub` warning** when a matched stack holds an open PR this
+    clone has no branch for, naming the branches and pointing at `gh stack
+    sync`. The reverse — a local branch not yet submitted — is ordinary and is
+    mentioned in the tooltip rather than coloured. Merged and closed entries
+    count as neither: the normal end of a stack's life is not drift, the same
+    reason a `gone` upstream is excluded everywhere else.
+  - An **"On GitHub only" list** of stacks sharing no branch with anything here,
+    each with a Check out button running `gh stack checkout <pr>`. Fully merged
+    stacks are dropped, and the button targets the bottom-most *open* PR, since
+    a merged one may have had its branch deleted. It renders nothing when the
+    list is empty, so the common repository pays no chrome for it.
+
+- **A `PR base` badge when a pull request targets the wrong branch.** gh-stack
+  records each branch's base as a **SHA** and never reads the PR's own
+  `baseRefName`, so a base retargeted on the server — by a colleague, by a merge
+  queue, or by GitHub itself when a parent PR closes — left the local view
+  complete and wrong. The Current column now says so, on the row whose PR would
+  otherwise merge somewhere other than the branch beneath it.
+
+- **`restack.readRemoteStacks`** (default on) turns the whole path off. Restack
+  then falls back to the `gh pr list` call it always made, so the PR badges stay
+  and only the surfaces above disappear. The same fallback happens automatically
+  on a GitHub Enterprise Server old enough to have no `stack` field: the API
+  answers `undefinedField`, which Restack reads as "ask the old way" rather than
+  as an error.
+
+  Freshness follows the existing rule rather than adding a new one. The read
+  happens once when the view first loads, then on Fetch and on a stack switch,
+  and is cached in between — so the `.git/HEAD` watcher, which fires once per
+  rebase step during an apply, stays network-free. The first read is deferred
+  and not awaited: it lands after first paint rather than delaying it. Nothing
+  polls on a timer.
+
+### Fixed
+
+- **Switcher badges could break mid-word.** `.stacks__path` sets
+  `word-break: break-all` so a long branch name wraps instead of overflowing the
+  row, but that applied to the badges too — a PR badge could split after the
+  `#`, leaving `#` and `27` on separate lines. Branch names still break
+  anywhere; the badges no longer do.
+
 ## 0.4.0
 
 ### Added
