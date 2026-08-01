@@ -94,6 +94,34 @@ The maintainer-facing version of this lives in `docs/RELEASING.md`; keep the two
 in step. It is deliberately *not* in `README.md`, which renders as the
 Marketplace and Open VSX storefront page.
 
+### What Claude does, and where it stops
+
+Asked to "release 0.6.0" or "cut a release", do steps 1–2 and then stop:
+
+1. **Write the `CHANGELOG.md` section.** The heading must be exactly
+   `## 0.6.0` — `scripts/changelog-section.mjs` compares the trimmed line for
+   equality, so `## v0.6.0` or `## 0.6.0 — title` is not found and the release
+   fails. Write it from the actual commits since the last tag
+   (`git log v<previous>..HEAD --oneline`), in terms of what changed for someone
+   using the extension.
+2. **Run `npm run typecheck` and `npm test`** so the failure surfaces here
+   rather than in CI.
+3. **Stop. Hand over the commands.** `npm version` commits and tags, and
+   `git push --follow-tags` pushes both — those are git writes, which are
+   Felix's to run. Same for `gh workflow run publish.yml`: it is the trigger for
+   an irreversible publish, and starting one is his call, not something to do
+   because it is the obvious next step.
+
+Watching and reporting is fine and useful — `gh run watch`, `gh run view --log`,
+reading the preflight summary, checking `gh release view`. Those are reads.
+
+If a run fails, diagnose it and fix the file; don't re-tag, don't re-cut a
+release, and don't delete one. A published Marketplace version can never be
+unpublished, and even a GitHub release is only deleted when Felix names that
+specific one.
+
+### How it works
+
 Two halves, deliberately. Pushing a `v*` tag runs
 `.github/workflows/release.yml`, which typechecks, tests, packages, and creates
 the GitHub release with the matching `CHANGELOG.md` section as its notes and the
@@ -107,8 +135,12 @@ npm version patch            # or minor; bumps package.json and tags
 git push --follow-tags       # the workflow builds and cuts the release
 
 # 2. Actions -> Publish -> Run workflow -> tag: v<version>
+#    or: gh workflow run publish.yml -f tag=v<version>
 #    Then approve the `publish` environment when it asks.
 ```
+
+Feature commits push to `main` freely — nothing releases on push. Only the `v*`
+tag and the manual dispatch trigger anything.
 
 The release workflow rejects a tag whose version disagrees with `package.json`,
 and a version with no changelog section — both **before** packaging, so a
@@ -151,6 +183,28 @@ hasn't been written to yet and the whole release can be retried after a bump.
 Both registries matter — Cursor and the other forks can't install from the
 Marketplace (its terms restrict it to Microsoft products), so they pull from
 Open VSX. Shipping to one leaves half the audience on an old version.
+
+### When a release fails
+
+Everything before the gate is reversible; everything after it is not.
+
+- **No changelog section, or tag disagrees with `package.json`** — fails before
+  packaging. Fix the file; the tag has to be deleted and re-pushed, which is
+  Felix's call to make.
+- **Version already live on a registry** — the preflight catches it pre-gate.
+  There is no recovery other than bumping to a new version.
+- **`verify-pats.mjs` fails** — after approval, before either registry is
+  written. Nothing shipped. Update the environment secret and re-run.
+- **Marketplace succeeded, Open VSX failed** — the one asymmetric case, and the
+  reason Marketplace goes first. That version is permanently live on one
+  registry, so do *not* bump: re-run only the Open VSX half
+  (`npx ovsx publish --packagePath restack-<version>.vsix`). Bumping here would
+  leave the Marketplace a version ahead forever.
+
+Felix is the only reviewer on the `publish` environment, so he can approve his
+own runs. The gate is a considered pause in front of a verified summary, not an
+enforcement boundary — which is exactly why the preflight has to be worth
+reading.
 
 Anything written to the repo root before `vsce package` gets bundled. v0.5.1
 shipped a stray `extension/release-notes.md` that way; the workflow now writes
