@@ -36,3 +36,8 @@ package-lock.json
 *.vsix
 .DS_Store
 .env
+
+# Scratch files a release run leaves in the working tree. The workflow writes
+# its notes to RUNNER_TEMP for this reason, but a local `gh release create
+# --notes-file` is an easy way to reintroduce the problem.
+release-notes.md
