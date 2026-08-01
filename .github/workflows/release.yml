@@ -43,8 +43,12 @@ jobs:
 
       # Fail before building rather than after, so a forgotten changelog entry
       # costs seconds instead of a full package run.
+      #
+      # Written to RUNNER_TEMP, not the working tree: vsce packages whatever it
+      # finds in the repo root, and v0.5.1 shipped with a stray release-notes.md
+      # inside the .vsix because of exactly that.
       - name: Extract the changelog section
-        run: node scripts/changelog-section.mjs "${{ steps.version.outputs.version }}" > release-notes.md
+        run: node scripts/changelog-section.mjs "${{ steps.version.outputs.version }}" > "$RUNNER_TEMP/release-notes.md"
 
       - run: npm run typecheck
 
@@ -63,7 +67,7 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
-            --notes-file release-notes.md \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
             --verify-tag \
             "restack-${{ steps.version.outputs.version }}.vsix"
 
