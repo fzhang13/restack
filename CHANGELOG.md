@@ -1,5 +1,70 @@
 # Changelog
 
+## 0.5.0
+
+### Added
+
+- **Stacks read from GitHub, not just from this clone.** Everything Restack knew
+  about stacks came from two local sources: `gh stack view`, which reports the
+  stack HEAD is standing in, and `.git/gh-stack`, which records the stacks *this
+  machine* has checked out. A stack that existed only on the server was
+  invisible to both — a colleague's, your own from another laptop, or a pull
+  request someone appended to your stack on GitHub while you were working.
+
+  GitHub's GraphQL API now models stacks natively (`PullRequest.stack`, with its
+  number, size, base, and ordered entries), so Restack asks for them in the call
+  that already fetched PR badges. That call was already authenticated and
+  already went out; it moved from `gh pr list --json` to `gh api graphql`, so
+  this costs one request rather than two, and needs no scope `gh` does not
+  already have. Three things come out of it:
+
+  - A **`⧉1204` badge** on a switcher row whose PRs all report the same GitHub
+    stack — the number everyone else sees, unlike the switcher's own index,
+    which is this clone's position in `.git/gh-stack` and means nothing to
+    anyone else. When the branches report *two* stacks the badge is omitted
+    rather than guessed at; that is the same ambiguity gh-stack refuses locally
+    with `branch %q belongs to multiple stacks`.
+  - A **`+1 on GitHub` warning** when a matched stack holds an open PR this
+    clone has no branch for, naming the branches and pointing at `gh stack
+    sync`. The reverse — a local branch not yet submitted — is ordinary and is
+    mentioned in the tooltip rather than coloured. Merged and closed entries
+    count as neither: the normal end of a stack's life is not drift, the same
+    reason a `gone` upstream is excluded everywhere else.
+  - An **"On GitHub only" list** of stacks sharing no branch with anything here,
+    each with a Check out button running `gh stack checkout <pr>`. Fully merged
+    stacks are dropped, and the button targets the bottom-most *open* PR, since
+    a merged one may have had its branch deleted. It renders nothing when the
+    list is empty, so the common repository pays no chrome for it.
+
+- **A `PR base` badge when a pull request targets the wrong branch.** gh-stack
+  records each branch's base as a **SHA** and never reads the PR's own
+  `baseRefName`, so a base retargeted on the server — by a colleague, by a merge
+  queue, or by GitHub itself when a parent PR closes — left the local view
+  complete and wrong. The Current column now says so, on the row whose PR would
+  otherwise merge somewhere other than the branch beneath it.
+
+- **`restack.readRemoteStacks`** (default on) turns the whole path off. Restack
+  then falls back to the `gh pr list` call it always made, so the PR badges stay
+  and only the surfaces above disappear. The same fallback happens automatically
+  on a GitHub Enterprise Server old enough to have no `stack` field: the API
+  answers `undefinedField`, which Restack reads as "ask the old way" rather than
+  as an error.
+
+  Freshness follows the existing rule rather than adding a new one. The read
+  happens once when the view first loads, then on Fetch and on a stack switch,
+  and is cached in between — so the `.git/HEAD` watcher, which fires once per
+  rebase step during an apply, stays network-free. The first read is deferred
+  and not awaited: it lands after first paint rather than delaying it. Nothing
+  polls on a timer.
+
+### Fixed
+
+- **Switcher badges could break mid-word.** `.stacks__path` sets
+  `word-break: break-all` so a long branch name wraps instead of overflowing the
+  row, but that applied to the badges too — a PR badge could split after the
+  `#`, leaving `#` and `27` on separate lines. Branch names still break
+  anywhere; the badges no longer do.
+
 ## 0.4.0
 
 ### Added

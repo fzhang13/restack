@@ -1032,11 +1032,17 @@ button:disabled {
  * a stack you are not looking at, so the numbers are there to be scanned, not
  * read one by one.
  */
+/* `nowrap` here and on every badge below: `.stacks__path` sets
+   `word-break: break-all` so a long branch name wraps rather than overflowing,
+   and without this the badges wrap too — `#27` splitting after the `#`, or
+   `on GitHub` after `Git`. A branch name is worth breaking anywhere; a
+   four-character badge is not. */
 .switcher__pr {
   margin-left: 4px;
   font-size: 10px;
   font-variant-numeric: tabular-nums;
   opacity: 0.85;
+  white-space: nowrap;
 }
 
 .switcher__pr--open {
@@ -1064,10 +1070,52 @@ button:disabled {
   font-size: 10px;
   font-variant-numeric: tabular-nums;
   color: var(--vscode-editorError-foreground, #f85149);
+  white-space: nowrap;
 }
 
 .switcher__here {
   font-size: 10px;
   opacity: 0.6;
   white-space: nowrap;
+}
+
+/* The GitHub stack number. A name for the thing, not a warning about it —
+   quieter than `.switcher__behind`, which is next to it on the same row. */
+.switcher__remote {
+  margin-left: 6px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.6;
+  white-space: nowrap;
+}
+
+/* A PR added to this stack on GitHub that we have no branch for. Warning
+   rather than error: nothing is at risk, but the row below is incomplete. */
+.switcher__diverged {
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--vscode-editorWarning-foreground, #d29922);
+  white-space: nowrap;
+}
+
+/*
+ * Stacks that exist only on GitHub. Dashed, because unlike every other row on
+ * this screen they describe something with no local refs behind it — nothing
+ * here can be checked out, dragged, or rebased until it is fetched.
+ */
+.stacks--remote {
+  margin-top: 10px;
+}
+
+.stacks__item--remote {
+  background: none;
+  border: 1px dashed var(--vscode-widget-border, rgba(127, 127, 127, 0.35));
+}
+
+/* Matches `.badge--behind`'s reasoning inverted: a retargeted PR base is
+   wrong, not dangerous — nothing is lost, but the next submit will move it. */
+.badge--pr-base {
+  text-transform: none;
+  color: var(--vscode-editorWarning-foreground, #d29922);
+  background: var(--vscode-inputValidation-warningBackground, rgba(210, 153, 34, 0.12));
 }
