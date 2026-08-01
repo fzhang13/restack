@@ -1,0 +1,132 @@
+# Publishes an existing GitHub release to the VS Code Marketplace and Open VSX.
+#
+# Started by hand, never by a tag push. Deciding a version is ready for users is
+# a judgment call, and neither registry lets you unpublish — so the trigger
+# stays human even though the mechanics do not.
+#
+# Two jobs with an approval gate between them. Everything checkable runs first
+# and has no side effects; the gate comes after, so the summary you approve is
+# one that has already been verified rather than a hopeful guess. An expired
+# VSCE_PAT fails in `verify`, before anyone is asked to approve.
+#
+# The `publish` environment must exist with required reviewers, or the gate is
+# silently skipped and this publishes on the click alone.
+
+name: Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (e.g. v0.5.1)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Run the checks and stop before publishing'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Resolve the tag
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "No release named $TAG. Cut one by pushing the tag first." >&2
+            exit 1
+          fi
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      # The artifact the release actually offers — not a rebuild. Publishing
+      # bytes nobody downloaded would defeat the point of attaching them.
+      - name: Download the released .vsix
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.vsix' --dir .
+          ls -la ./*.vsix
+
+      - name: Preflight
+        env:
+          # Only to check they are non-empty; the publish job does the real work.
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          node scripts/preflight-publish.mjs \
+            "${{ steps.resolve.outputs.version }}" \
+            "restack-${{ steps.resolve.outputs.version }}.vsix"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-to-publish
+          path: restack-${{ steps.resolve.outputs.version }}.vsix
+          retention-days: 1
+
+  publish:
+    name: Publish
+    needs: verify
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    # The gate. Requires a `publish` environment with required reviewers set;
+    # without it this job runs unattended.
+    environment:
+      name: publish
+      url: https://marketplace.visualstudio.com/items?itemName=felixzhang.restack
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: vsix-to-publish
+
+      # scripts/publish.mjs sends the same file to both with --packagePath, so
+      # neither rebuilds, and does the Marketplace first: if that rejects the
+      # version, Open VSX has not been written to yet and the release is still
+      # retryable after a bump.
+      - name: Publish to both registries
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: node scripts/publish.mjs "restack-${{ needs.verify.outputs.version }}.vsix"
+
+      - name: Summarize
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          {
+            echo "## Published $VERSION"
+            echo
+            echo "- [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=felixzhang.restack)"
+            echo "- [Open VSX](https://open-vsx.org/extension/felixzhang/restack)"
+            echo
+            echo "Both registries take a few minutes to show the new version."
+          } >> "$GITHUB_STEP_SUMMARY"

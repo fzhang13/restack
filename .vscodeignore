@@ -27,6 +27,10 @@ package-lock.json
 .gitignore
 .vscodeignore
 
+# Contributor context, not user documentation. README.md and CHANGELOG.md are
+# the two that render on the marketplace page and do ship.
+CLAUDE.md
+
 # Production builds emit no sourcemaps, but esbuild does not clean the
 # directory, so stale ones from a dev build would otherwise be picked up.
 **/*.map
