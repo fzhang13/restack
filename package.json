@@ -2,7 +2,7 @@
   "name": "restack",
   "displayName": "Restack",
   "description": "Drag to reorder GitHub stacked PRs. Shows the exact git rebase plan before running it, and can undo. Requires the gh CLI with gh-stack.",
-  "version": "0.4.0",
+  "version": "0.5.1",
   "publisher": "felixzhang",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -167,6 +167,11 @@
           "default": "gh",
           "scope": "machine",
           "description": "Path to the gh CLI executable. User-settings only: a workspace cannot override it, since Restack executes this path on startup."
+        },
+        "restack.readRemoteStacks": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask GitHub about stacks that exist on the remote — a colleague's, or your own from another machine — and about pull requests added to your stack on the server. One authenticated GraphQL call through the gh CLI, made once when the view first loads and again whenever you press Fetch. Turn this off to keep Restack entirely local except for the buttons that say otherwise."
         }
       }
     }
@@ -176,7 +181,7 @@
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types test/*.test.ts",
-    "media": "node media/build-icon.mjs && npm run build && node test/harness/build-driver.mjs && node media/build-screenshot.mjs && node media/build-init-screenshot.mjs && node media/build-remote-screenshot.mjs && node media/build-switcher-screenshot.mjs",
+    "media": "node media/build-icon.mjs && npm run build && node test/harness/build-driver.mjs && node media/build-screenshot.mjs && node media/build-init-screenshot.mjs && node media/build-remote-screenshot.mjs && node media/build-switcher-screenshot.mjs && node media/build-github-screenshot.mjs",
     "package": "vsce package",
     "publish:vsce": "vsce publish",
     "publish:ovsx": "ovsx publish",

@@ -1,0 +1,124 @@
+/*
+ * Checkout, revealed on hover. Always laid out — hiding it with `display: none`
+ * would shift every other item in the row the moment the pointer arrived — and
+ * always reachable by keyboard, since :focus-visible brings it back.
+ */
+.row__checkout,
+.trunk .row__checkout {
+  margin-left: auto;
+  padding: 0 4px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 80ms linear;
+}
+
+.row:hover .row__checkout,
+.trunk:hover .row__checkout,
+.row__checkout:focus-visible {
+  opacity: 0.75;
+}
+
+.row__checkout:hover:not(:disabled) {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(127, 127, 127, 0.2));
+}
+
+.row__checkout:disabled {
+  cursor: default;
+}
+
+/*
+ * Change base, on the trunk row because that is what it changes. Hover-revealed
+ * like the checkout arrow next to it — re-basing a whole stack is rare enough
+ * that a permanently visible control would just be noise on every row.
+ *
+ * `margin-left: auto` on both this and .row__checkout is deliberate: whichever
+ * comes first absorbs the gap, so the pair sits right-aligned whether or not
+ * the checkout button is rendered.
+ */
+.trunk__base {
+  margin-left: auto;
+  padding: 0 5px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: inherit;
+  font-size: 10px;
+  line-height: 1.5;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 80ms linear;
+}
+
+.trunk:hover .trunk__base,
+.trunk__base:focus-visible {
+  opacity: 0.75;
+}
+
+.trunk__base:hover:not(:disabled) {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(127, 127, 127, 0.2));
+}
+
+.trunk__base:disabled {
+  cursor: default;
+}
+
+/* Standing on the trunk is a position like any other, so it is marked like one. */
+.trunk--current .trunk__name {
+  font-weight: 600;
+  opacity: 1;
+}
+
+.trunk--current .trunk__node {
+  background: var(--vscode-focusBorder, #4c8dff);
+  box-shadow: 0 0 5px 2px var(--vscode-focusBorder, #4c8dff);
+}
+
+.row--merged {
+  opacity: 0.5;
+}
+
+/* A moved branch keeps its node colour — the tint marks the row that shifted. */
+.row--moved {
+  background: var(--vscode-diffEditor-insertedTextBackground, rgba(80, 160, 80, 0.16));
+  border-color: var(--vscode-diffEditor-insertedTextBorder, rgba(80, 160, 80, 0.35));
+}
+
+.name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pr {
+  opacity: 0.75;
+  font-size: 11px;
+}
+
+.pr--none {
+  opacity: 0.4;
+  font-style: italic;
+}
+
+/* A link, not a control: the button element is only there for keyboard and
+   screen-reader semantics. */
+.pr--link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--vscode-textLink-foreground);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.pr--link:hover:not(:disabled) {
+  background: none;
+  color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground));
+  text-decoration: underline;
+}
