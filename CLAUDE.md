@@ -90,6 +90,10 @@ for manual testing. Recreate with `test/make-conflict-sandbox.sh` and
 
 ## Releasing
 
+The maintainer-facing version of this lives in `docs/RELEASING.md`; keep the two
+in step. It is deliberately *not* in `README.md`, which renders as the
+Marketplace and Open VSX storefront page.
+
 Two halves, deliberately. Pushing a `v*` tag runs
 `.github/workflows/release.yml`, which typechecks, tests, packages, and creates
 the GitHub release with the matching `CHANGELOG.md` section as its notes and the
@@ -114,10 +118,18 @@ forgotten entry costs seconds rather than a full build.
 approval gate between them. `verify` has no side effects: it confirms the
 release exists, downloads the `.vsix` it actually offers, and runs
 `scripts/preflight-publish.mjs` — which checks the artifact's internal version
-against the tag, looks for stray files, asks both registries whether the version
-is already live, and confirms both PATs are non-empty. Only then does the gate
-ask for approval, so what you approve has already been checked and an expired
-token fails before the prompt rather than after it.
+against the tag, looks for stray files, and asks both registries whether the
+version is already live. Only then does the gate ask for approval, so what you
+approve has already been checked.
+
+The tokens can't be checked there. `VSCE_PAT` and `OVSX_PAT` are **environment
+secrets on `publish`**, and GitHub only exposes those to a job declaring
+`environment:` — which is the gated job. A pre-gate job sees empty strings, so
+`scripts/verify-pats.mjs` runs as the publish job's first step instead, calling
+`vsce verify-pat` and `ovsx verify-pat` before either registry is written to.
+That's a stronger check than the presence test it replaced: a PAT scoped to one
+Azure DevOps organization instead of all of them is non-empty and still can't
+publish.
 
 The gate depends on a `publish` **environment with required reviewers**
 existing in repo settings. Without it the job runs unattended on the click

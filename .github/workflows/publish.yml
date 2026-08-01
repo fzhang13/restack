@@ -4,10 +4,15 @@
 # a judgment call, and neither registry lets you unpublish — so the trigger
 # stays human even though the mechanics do not.
 #
-# Two jobs with an approval gate between them. Everything checkable runs first
-# and has no side effects; the gate comes after, so the summary you approve is
-# one that has already been verified rather than a hopeful guess. An expired
-# VSCE_PAT fails in `verify`, before anyone is asked to approve.
+# Two jobs with an approval gate between them. Everything checkable without
+# credentials runs first and has no side effects, so the summary you approve is
+# one that has already been verified rather than a hopeful guess.
+#
+# The tokens are the exception, and not by choice: they are environment secrets
+# on `publish`, which GitHub only exposes to a job declaring that environment.
+# Reading them before the gate would mean asking for approval before doing any
+# checking. So they are verified first thing after the gate, against the
+# registries themselves, before either is written to.
 #
 # The `publish` environment must exist with required reviewers, or the gate is
 # silently skipped and this publishes on the click alone.
@@ -68,11 +73,11 @@ jobs:
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.vsix' --dir .
           ls -la ./*.vsix
 
+      # No credentials here. VSCE_PAT and OVSX_PAT are environment secrets on
+      # `publish`, and GitHub only hands those to a job declaring that
+      # environment — which would trip the approval prompt before any checking
+      # happened. scripts/verify-pats.mjs runs in the gated job instead.
       - name: Preflight
-        env:
-          # Only to check they are non-empty; the publish job does the real work.
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
         run: |
           node scripts/preflight-publish.mjs \
             "${{ steps.resolve.outputs.version }}" \
@@ -107,6 +112,16 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: vsix-to-publish
+
+      # First thing after the gate, before either registry is written to. Asks
+      # each one whether the token can actually publish, so a wrongly-scoped or
+      # expired PAT fails with nothing shipped rather than after the Marketplace
+      # has permanently accepted a version Open VSX never got.
+      - name: Verify both tokens
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: node scripts/verify-pats.mjs
 
       # scripts/publish.mjs sends the same file to both with --packagePath, so
       # neither rebuilds, and does the Marketplace first: if that rejects the
