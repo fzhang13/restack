@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.6.0
+
+### Added
+
+- **Restack says when gh-stack is missing, and offers to install it.** Restack
+  is a UI over the `gh stack` CLI, so without that extension it can do nothing —
+  and what it did instead was close to nothing visible. `gh stack view` failing
+  with `unknown command` and `gh` not being on the PATH at all collapsed onto
+  one screen titled *gh CLI unavailable*, which is the wrong sentence for the
+  first case: `gh` is right there, working. The screen had a Retry button and no
+  other way forward, and nothing surfaced outside the view — the status bar hides
+  when there is no stack, so a user who never opened the sidebar saw an
+  extension that silently did nothing.
+
+  They are now two screens with two different answers, because only one of them
+  has a fix Restack can run:
+
+  - **gh-stack is not installed** shows `gh extension install github/gh-stack`
+    and an **Install gh-stack** button that runs it, with Copy and Retry beside
+    it. The command goes through the same child-process path as every other
+    command, so its argv, exit code, and both streams land in the Restack output
+    channel, and it runs under a progress notification. On failure gh's own
+    first line is the error, with the log opened; the command stays on screen to
+    run by hand. On success the view re-reads the stack.
+  - **gh CLI not found** offers a link to cli.github.com and a shortcut to the
+    `restack.ghPath` setting — for a `gh` that is installed somewhere Restack
+    did not look — but deliberately no install button. Installing the CLI would
+    need the CLI.
+
+  A one-time warning notification covers the user who never opens the view,
+  carrying the same Install action plus Show Restack. It fires once per machine
+  and only inside a git repository, so opening an unrelated folder does not
+  mention stacking at all, and the flag clears on the first stack that reads
+  successfully — so removing gh-stack later is mentioned again rather than
+  passed over in silence.
+
+  **Restack: Install gh-stack** is also in the command palette.
+
+### Changed
+
+- **Releasing is now two workflows with an approval gate between them.**
+  Pushing a `v*` tag typechecks, tests, packages, and cuts the GitHub release
+  with the matching changelog section as its notes. Publishing to the
+  Marketplace and Open VSX is a separate, hand-started workflow: neither
+  registry lets a version be unpublished, so a tag push must never be able to
+  ship one. Its first job has no side effects — it downloads the `.vsix` the
+  release actually offers, checks the version inside the artifact against the
+  tag, looks for stray files, and asks both registries whether the version is
+  already live — and only then does the gate ask for approval. The tokens are
+  verified with `vsce verify-pat` and `ovsx verify-pat` as the publish job's
+  first step, which catches a PAT scoped to the wrong Azure DevOps organization
+  rather than only an empty one.
+
+- **The release procedure moved out of `README.md`** into `docs/RELEASING.md`.
+  The README renders as the Marketplace and Open VSX storefront page, where
+  maintainer instructions are noise.
+
+### Fixed
+
+- **v0.5.1 shipped a stray `extension/release-notes.md`.** The release workflow
+  wrote its notes to the repository root before `vsce package` ran, so the file
+  was bundled into the `.vsix`. Notes now go to `$RUNNER_TEMP`, and
+  `.vscodeignore` excludes the name as a second layer.
+
 ## 0.5.1
 
 ### Changed
