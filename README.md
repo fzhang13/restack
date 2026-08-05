@@ -457,7 +457,9 @@ these it will tell you what is missing rather than doing anything:
 
 - **[`gh`](https://cli.github.com/)**, authenticated (`gh auth login`).
 - **[gh-stack](https://github.com/github/gh-stack)**:
-  `gh extension install github/gh-stack`.
+  `gh extension install github/gh-stack`. If it is not installed, Restack says
+  so and offers to run that command for you — the one dependency it can fix
+  itself. A missing `gh` it cannot, since installing the CLI would need the CLI.
 - **A git repository.** A stack is not a prerequisite: on a repo without one
   Restack offers to create it (see [Initializing a stack](#initializing-a-stack)).
 - **An `origin` remote**, for Push & Submit only. Everything local works

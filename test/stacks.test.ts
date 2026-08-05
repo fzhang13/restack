@@ -79,11 +79,20 @@ function writeMetadata(cwd: string, stacks: { trunk: string; branches: string[] 
   );
 }
 
-/** A `gh` stand-in that prints `stdout` and exits `code`. */
-function fakeGh(stdout: string, code = 0): string {
+/**
+ * A `gh` stand-in that prints `output` and exits `code`.
+ *
+ * `stream` matters for the failure cases: the real gh writes its errors to
+ * stderr, and readStack reads that first. Successful JSON output goes to
+ * stdout, which is the default.
+ */
+function fakeGh(output: string, code = 0, stream: 'stdout' | 'stderr' = 'stdout'): string {
   const dir = mkdtempSync(join(tmpdir(), 'restack-gh-'));
   const path = join(dir, 'gh');
-  writeFileSync(path, `#!/bin/sh\ncat <<'EOF'\n${stdout}\nEOF\nexit ${code}\n`, { mode: 0o755 });
+  const redirect = stream === 'stderr' ? ' >&2' : '';
+  writeFileSync(path, `#!/bin/sh\ncat <<'EOF'${redirect}\n${output}\nEOF\nexit ${code}\n`, {
+    mode: 0o755,
+  });
   return path;
 }
 
@@ -257,6 +266,33 @@ test('a branch in several stacks is no-stack, not an error', async (t) => {
   const result = await readStack(cwd, gh);
 
   assert.equal(result.kind, 'no-stack');
+});
+
+test('a gh that has never heard of `stack` is stack-missing, not gh-missing', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  // What gh 2.96 actually writes to stderr, exiting 1. Its own kind because
+  // the fix differs: this one is a command Restack can offer to run, and
+  // titling it "gh CLI unavailable" would be wrong — gh is right here.
+  const gh = fakeGh('unknown command "stack" for "gh"', 1, 'stderr');
+
+  const result = await readStack(cwd, gh);
+
+  assert.equal(result.kind, 'stack-missing');
+});
+
+test('a gh that cannot be spawned at all is gh-missing', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  // ENOENT, the case Restack cannot fix for you: installing the CLI needs the
+  // CLI. The message names the configured path, since a wrong
+  // `restack.ghPath` lands here too.
+  const result = await readStack(cwd, join(cwd, 'no-such-gh'));
+
+  assert.equal(result.kind, 'gh-missing');
+  assert.match(result.message, /no-such-gh/);
 });
 
 test('topBranchOf returns the top, which is the branch to check out', () => {

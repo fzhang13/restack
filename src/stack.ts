@@ -55,11 +55,13 @@ export async function readStack(cwd: string, ghPath = 'gh'): Promise<StackResult
     const stderr = cleanMessage(e.stderr ?? '');
     const combined = `${stderr} ${cleanMessage(e.stdout ?? '')}`.toLowerCase();
 
+    // gh exits 1 with `unknown command "stack" for "gh"` on stderr. Its own
+    // kind rather than gh-missing: gh is here and working, and the fix is one
+    // command Restack can offer to run — see operations/setup.ts.
     if (combined.includes('unknown command') || combined.includes('not a gh command')) {
       return {
-        kind: 'gh-missing',
-        message:
-          'The gh-stack extension is not installed. Run: gh extension install github/gh-stack',
+        kind: 'stack-missing',
+        message: 'The gh CLI is installed, but the gh-stack extension is not.',
       };
     }
 

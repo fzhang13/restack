@@ -11,7 +11,7 @@ import {
   readLocalStacks,
   unstackPreflight,
 } from '../src/init.ts';
-import { addArgs, initArgs, unstackArgs } from '../src/plan.ts';
+import { addArgs, initArgs, installArgs, unstackArgs } from '../src/plan.ts';
 import { ensureBaseBranch } from '../src/remote.ts';
 
 /**
@@ -327,6 +327,12 @@ function makeStackedRepo(): string {
 test('unstackArgs builds the gh stack unstack command for each scope', () => {
   assert.deepEqual(unstackArgs(true), ['stack', 'unstack', '--local']);
   assert.deepEqual(unstackArgs(false), ['stack', 'unstack']);
+});
+
+test('installArgs builds the gh extension install command', () => {
+  // The setup screen previews this string and the host runs this argv, so a
+  // change to either has to be a change to both.
+  assert.deepEqual(installArgs(), ['extension', 'install', 'github/gh-stack']);
 });
 
 test('unstackPreflight accepts a clean repository with a stack', async (t) => {
