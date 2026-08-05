@@ -47,6 +47,8 @@ const candidates: CandidateBranch[] = [
  *   ?view=multi   three stacks in one repository — the switcher
  *   ?view=github  the same, plus what GitHub knows: stack numbers, drift, and a
  *                 stack that exists only on the remote
+ *   ?view=setup   gh is installed, gh-stack is not — the install screen
+ *   ?view=no-gh   no gh CLI at all, the one Restack cannot fix for you
  */
 const view = new URLSearchParams(location.search).get('view') ?? '';
 
@@ -193,6 +195,32 @@ function remoteFor(trunk: string): RemoteState | undefined {
 }
 
 function sendStack() {
+  // Restack not set up yet. Neither carries a stack, candidates, or anything
+  // else — that is the point: these are the states where nothing could be read.
+  if (view === 'setup' || view === 'no-gh') {
+    window.postMessage(
+      {
+        type: 'stack',
+        result:
+          view === 'setup'
+            ? {
+                kind: 'stack-missing',
+                message: 'The gh CLI is installed, but the gh-stack extension is not.',
+              }
+            : {
+                kind: 'gh-missing',
+                message: 'Could not run "gh". Install the GitHub CLI, or set restack.ghPath.',
+              },
+        candidates: [],
+        canPublish: false,
+        stacks: [],
+        remoteStacks: [],
+      },
+      '*',
+    );
+    return;
+  }
+
   if (view === 'init' || view === 'outside') {
     window.postMessage(
       {

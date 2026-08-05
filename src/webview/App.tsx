@@ -2,6 +2,7 @@ import type { Stack } from '../model';
 import { Message } from './components/primitives';
 import { useHostState } from './hooks/useHostState';
 import { InitView } from './views/InitView';
+import { SetupView } from './views/SetupView';
 import { StackView } from './views/StackView';
 import { vscodeApi } from './vscode';
 import './styles.css';
@@ -37,10 +38,16 @@ export function App() {
     );
   }
 
+  // Neither is an error in the stack — they are Restack not being set up yet,
+  // and both have something to do about it. Before the generic gate below,
+  // which has only a Retry button to offer.
+  if (result?.kind === 'gh-missing' || result?.kind === 'stack-missing') {
+    return <SetupView kind={result.kind} message={result.message} />;
+  }
+
   if (result && result.kind !== 'ok') {
     const titles: Record<string, string> = {
       'not-a-repo': 'Not a git repository',
-      'gh-missing': 'gh CLI unavailable',
       error: 'Could not read stack',
     };
     return (

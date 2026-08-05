@@ -108,3 +108,21 @@
 .badge--new {
   color: var(--vscode-gitDecoration-addedResourceForeground, #3fb950);
 }
+
+/*
+ * Setting Restack up: no gh, or no gh-stack. Reuses `.message` and
+ * `.init__preview` above, so only the button row is new — appended rather than
+ * slotted in beside them, since nothing here needs to win a cascade.
+ */
+.setup__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+/* The command preview sits between the message and the buttons, and `.app`'s
+   12px gap reads as a gulf around something that short. */
+.setup .init__preview {
+  margin: -4px 0;
+}

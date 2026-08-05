@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { handleInstallGhStack } from './view/operations/setup';
 import { StackViewProvider } from './view/provider';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -23,6 +24,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('restack.checkoutBranch', () => provider.checkoutBranch()),
     vscode.commands.registerCommand('restack.switchStack', () => provider.switchStack()),
     vscode.commands.registerCommand('restack.newStack', () => provider.newStack()),
+    vscode.commands.registerCommand('restack.installGhStack', () =>
+      handleInstallGhStack(provider),
+    ),
     vscode.commands.registerCommand('restack.showLog', () => log.show()),
   );
 

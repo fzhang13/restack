@@ -304,6 +304,17 @@ export function unstackArgs(local: boolean): string[] {
 }
 
 /**
+ * The argv for installing gh-stack itself: `gh extension install github/gh-stack`.
+ *
+ * The one command here that is not a `stack` subcommand — it is what makes the
+ * others runnable. Here beside them for the same reason as the rest: the setup
+ * screen previews the exact argv the host runs, from one source.
+ */
+export function installArgs(): string[] {
+  return ['extension', 'install', 'github/gh-stack'];
+}
+
+/**
  * The remote half: push, then submit.
  *
  * `gh stack push` does per-branch `--force-with-lease` itself and skips merged

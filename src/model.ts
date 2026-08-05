@@ -349,7 +349,14 @@ export type StackResult =
       remoteBranches?: string[];
     }
   | { kind: 'not-a-repo'; message: string }
+  /** The `gh` CLI itself could not be run. Restack cannot install this one. */
   | { kind: 'gh-missing'; message: string }
+  /**
+   * `gh` runs, but does not know the `stack` command — the extension is not
+   * installed. Distinct from `gh-missing` because it has a one-command fix
+   * Restack can offer to run; see operations/setup.ts.
+   */
+  | { kind: 'stack-missing'; message: string }
   | { kind: 'error'; message: string };
 
 /** Messages: extension host -> webview. */
@@ -478,4 +485,13 @@ export type WebviewMessage =
    * trunk, and the ordinary no-stack view takes it from there.
    */
   | { type: 'newStack' }
+  /**
+   * Install the tool Restack is a front end for:
+   * `gh extension install github/gh-stack`. Only ever sent from the setup
+   * screen, which is the one state where there is no stack to act on because
+   * nothing can read one.
+   */
+  | { type: 'installGhStack' }
+  /** Reveal `restack.ghPath`, for a gh CLI installed somewhere unusual. */
+  | { type: 'openGhPathSetting' }
   | { type: 'showLog' };

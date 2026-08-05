@@ -49,9 +49,10 @@ Inside `src/`:
   its own unlogged helper on purpose: it runs a merge-base per branch on every
   refresh, and that volume would bury the commands a user wants to read in the
   output channel.
-- `view/provider.ts` + `view/operations/*` — the nine stack operations. They
-  reach the provider through the narrow `Host` interface (`view/host.ts`) rather
-  than taking six arguments each.
+- `view/provider.ts` + `view/operations/*` — the nine stack operations, plus
+  `setup.ts`, which is the one that runs before a stack can be read at all:
+  `gh extension install github/gh-stack`. They reach the provider through the
+  narrow `Host` interface (`view/host.ts`) rather than taking six arguments each.
 - `webview/components/`, `views/`, `hooks/`, `lib/` — `App.tsx` is only the
   loading and error gates.
 
@@ -80,7 +81,8 @@ never to `gh`, so they run anywhere git exists.
 
 `test/harness/index.html` renders the webview in a plain browser with no
 extension host. `?view=` reaches states a single fixture can't be in at once:
-`init`, `outside`, `drift`, `trunk`, `away`, `multi`, `github`, `conflict`.
+`init`, `outside`, `drift`, `trunk`, `away`, `multi`, `github`, `conflict`,
+`setup`, `no-gh`.
 Rebuild it with `node test/harness/build-driver.mjs` — it bundles the real
 `plan.ts`, so the page computes plans with the same code the extension runs.
 

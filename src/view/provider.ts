@@ -19,7 +19,7 @@ import type {
   StackSummary,
   WebviewMessage,
 } from '../model';
-import { resolves } from './git';
+import { git, resolves } from './git';
 import type { Host } from './host';
 import { webviewHtml } from './html';
 import { pickBase, pickBranch, pickStack } from './picks';
@@ -37,10 +37,21 @@ import { openFile, openMergeEditor, openUrl } from './operations/files';
 import { handleInitStack } from './operations/init';
 import { handleRebaseStack } from './operations/rebase';
 import { handleRemoveStack } from './operations/remove';
+import { GH_CLI_URL, handleInstallGhStack, openGhPathSetting } from './operations/setup';
 import { fetch as fetchRemoteState, handleSyncStack } from './operations/sync';
 
 /** workspaceState key holding an apply session across a window reload. */
 const SESSION_KEY = 'restack.session';
+
+/**
+ * globalState key: whether the "gh-stack is missing" notice has been shown.
+ *
+ * Global rather than per-workspace, and cleared the moment a stack reads
+ * successfully — the dependency is a property of the machine, so being told
+ * once per machine is the right dose, and being told again after uninstalling
+ * it is better than silence.
+ */
+const SETUP_NOTICE_KEY = 'restack.setupNoticeShown';
 
 /**
  * Restack: read the stack, let the user drag branches into a new order, render
@@ -309,6 +320,12 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
         case 'newStack':
           void handleNewStack(this);
           break;
+        case 'installGhStack':
+          void handleInstallGhStack(this);
+          break;
+        case 'openGhPathSetting':
+          void openGhPathSetting();
+          break;
         case 'showLog':
           this.log.show(true);
           break;
@@ -513,6 +530,58 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
     this.github = graph;
   }
 
+  /**
+   * Say something when the tool Restack depends on is not there.
+   *
+   * The setup screen covers the user who opens the view; this covers the one
+   * who does not. Without it a missing gh-stack looks like an extension that
+   * silently does nothing — the status bar hides with no stack to report, so
+   * there is nothing else on screen to notice.
+   *
+   * Deliberately quiet. Once per machine, and only inside a git repository:
+   * opening an unrelated folder is not a moment to be told about a stacking
+   * tool. The flag is cleared on the first successful read, so this speaks
+   * again if gh-stack later goes away.
+   */
+  private async setupNotice(cwd: string, result: StackResult): Promise<void> {
+    if (result.kind === 'ok') {
+      // Guarded: refresh() runs on every `.git/HEAD` change, and an
+      // unconditional write would be one per rebase step for no reason.
+      if (this.context.globalState.get<boolean>(SETUP_NOTICE_KEY)) {
+        void this.context.globalState.update(SETUP_NOTICE_KEY, undefined);
+      }
+      return;
+    }
+    if (result.kind !== 'gh-missing' && result.kind !== 'stack-missing') {
+      return;
+    }
+    if (this.context.globalState.get<boolean>(SETUP_NOTICE_KEY)) {
+      return;
+    }
+    if (!(await git(cwd, ['rev-parse', '--is-inside-work-tree'])).ok) {
+      return;
+    }
+
+    void this.context.globalState.update(SETUP_NOTICE_KEY, true);
+
+    // Not awaited: a modal-less notification can sit unanswered indefinitely,
+    // and refresh() must not be held open behind one.
+    const fix = result.kind === 'stack-missing' ? 'Install gh-stack' : 'Get the gh CLI';
+    void vscode.window
+      .showWarningMessage(`Restack: ${result.message}`, fix, 'Show Restack')
+      .then((choice) => {
+        if (choice === 'Install gh-stack') {
+          return handleInstallGhStack(this);
+        }
+        if (choice === 'Get the gh CLI') {
+          return vscode.env.openExternal(vscode.Uri.parse(GH_CLI_URL));
+        }
+        if (choice === 'Show Restack') {
+          return vscode.commands.executeCommand('restack.stackView.focus');
+        }
+      });
+  }
+
   /** The escape hatch for a repository where reaching GitHub is unwelcome. */
   private readsRemoteStacks(): boolean {
     return vscode.workspace.getConfiguration('restack').get<boolean>('readRemoteStacks', true);
@@ -585,6 +654,10 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
       stacks: this.lastStacks,
       remoteStacks: this.lastRemoteStacks,
     });
+
+    // After the post, like the GitHub read below: the setup screen is the
+    // useful half of this, and it should not wait on a `rev-parse`.
+    void this.setupNotice(cwd, result);
 
     // The first read of GitHub, once — deliberately after the post above, and
     // deliberately not awaited. Everything up to here is local, so the view is
