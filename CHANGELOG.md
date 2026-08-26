@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.6.1
+
+### Fixed
+
+- **Push & submit now joins the pull requests into a stack on GitHub.** Apply
+  & Publish and the standalone Push & submit button already ran `gh stack push`
+  and `gh stack submit --auto`, which opens or updates a PR per branch and
+  retargets each base. Submit also *tries* to create the GitHub stack object
+  that groups those PRs — but gh-stack v0.1.0 reports a failure there as a
+  warning and still exits 0. Restack treated that as success, so the panel
+  said the stack was published while GitHub showed a row of unrelated PRs.
+
+  The remote half now ends with `gh stack link --base <trunk> …`, which is the
+  dedicated, idempotent path for that grouping. It is skipped below two
+  linkable PRs (a stack needs two), and merged branches are left out because
+  their PRs are closed. If link still cannot create the stack, Restack now
+  fails the step instead of ignoring the warning, and says the PRs are on
+  GitHub but not joined — retrying Push & submit is safe.
+
 ## 0.6.0
 
 ### Added
