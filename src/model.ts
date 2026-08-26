@@ -107,9 +107,13 @@ export interface StepExec {
  * on top of it. Local like `rebase` and `metadata`: it only moves a ref this
  * repository already has objects for, since the fetch happened before the plan
  * was built.
+ *
+ * `link` is remote, and runs last: it joins the pull requests submit just
+ * opened into a stack on GitHub. See publishSteps in plan.ts for why submit
+ * alone is not enough.
  */
 export interface PlanStep {
-  kind: 'rebase' | 'metadata' | 'push' | 'submit' | 'trunk';
+  kind: 'rebase' | 'metadata' | 'push' | 'submit' | 'link' | 'trunk';
   /** Branch this step acts on, when applicable. */
   branch?: string;
   /** Human-readable shell command, ready to copy. */

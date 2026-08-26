@@ -78,7 +78,7 @@ export function Toolbar({
         disabled={!canPublish || busy}
         title={
           canPublish
-            ? 'Run gh stack push, then gh stack submit --auto, for the stack as it is on disk now'
+            ? 'Run gh stack push, gh stack submit --auto, then gh stack link — opens the PRs and joins them into a stack on GitHub, for the stack as it is on disk now'
             : 'No origin remote to push to'
         }
       >

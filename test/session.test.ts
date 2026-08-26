@@ -100,19 +100,22 @@ test('persistence is cleared when the session ends', async (t) => {
   assert.equal(saved, undefined);
 });
 
-test('publishOnly runs push and submit with no reorder and no undo', async (t) => {
+test('publishOnly runs push, submit, and link with no reorder and no undo', async (t) => {
   const cwd = makeRepo();
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
 
   const { runner, states } = collect();
   // `gh` is not resolvable here, so the push step fails — which is the point:
-  // it proves the two steps ran standalone, with no plan behind them.
+  // it proves the steps ran standalone, with no plan behind them.
   await runner.publishOnly(cwd, 'gh-does-not-exist', readStackFrom(cwd));
 
   const final = states.at(-1)!;
+  // The standalone action links too. Without it the button opens the pull
+  // requests and leaves them unconnected on GitHub, which is the whole bug.
   assert.deepEqual(runner.currentPlan?.steps.map((s) => s.command) ?? [], [
     'gh stack push',
     'gh stack submit --auto',
+    'gh stack link --base main feat/auth feat/api feat/ui',
   ]);
   assert.equal(final.phase, 'failed');
   // Nothing local was rewritten, so there is nothing to roll back.

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { preflight } from '../src/apply.ts';
+import { preflight, stackWarning } from '../src/apply.ts';
 import { computePlan } from '../src/plan.ts';
 import {
   ORDER,
@@ -378,4 +378,51 @@ test('undo after an insert restores the inserted branch too', async (t) => {
   assert.equal(readFileSync(join(cwd, '.git', 'gh-stack'), 'utf8'), before.metadata);
   assert.equal(git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD'), before.head);
   assert.equal(git(cwd, 'status', '--porcelain'), '');
+});
+
+/**
+ * gh-stack prints "could not create stack" and exits 0. Restack decided
+ * success on the exit code alone, so a submit that opened every pull request
+ * and linked none of them finished green — the panel said the stack was
+ * published while GitHub showed a row of unrelated PRs.
+ */
+test('a stack that failed to link is a failure even though gh exited 0', () => {
+  const submit = { kind: 'submit' as const, command: 'gh stack submit --auto' };
+  const link = { kind: 'link' as const, command: 'gh stack link --base main a b' };
+  const ok = { code: 0, stdout: '', stderr: '' };
+
+  for (const line of [
+    'Could not create stack: Resource not accessible by integration',
+    'Cannot create stack: something went wrong',
+    'Cannot update stack: this would remove feat/api from the stack',
+    'Failed to create stack: 403',
+    'Failed to update stack: 403',
+  ]) {
+    assert.equal(
+      stackWarning(submit, { ...ok, stdout: `Created PR #1 for feat/auth\n${line}\n` }),
+      line,
+      line,
+    );
+  }
+
+  // stderr counts too — gh-stack's warnings do not consistently pick a stream.
+  assert.equal(
+    stackWarning(link, { ...ok, stderr: 'Could not create stack: 403' }),
+    'Could not create stack: 403',
+  );
+
+  // A clean run stays clean, and the prose match is scoped to the two steps
+  // that can print it so a branch named "cannot-create-stack" cannot trip it.
+  assert.equal(stackWarning(submit, { ...ok, stdout: 'Stack on GitHub is up to date with 3 PRs' }), undefined);
+  assert.equal(
+    stackWarning(
+      { kind: 'push', command: 'gh stack push' },
+      { ...ok, stdout: 'Could not create stack: 403' },
+    ),
+    undefined,
+  );
+
+  // "Skipping stack recreation" is also printed when there is legitimately
+  // nothing to recreate, so it must not read as a failure.
+  assert.equal(stackWarning(submit, { ...ok, stdout: 'Skipping stack recreation' }), undefined);
 });

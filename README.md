@@ -244,11 +244,12 @@ first rebase, Restack records every branch SHA and the verbatim bytes of the
 metadata file; *Undo* restores both. It refuses to start over a dirty worktree,
 mid-rebase, or on a stack with merged branches.
 
-The **remote half** is `gh stack push` and `gh stack submit --auto`. It takes its
-own confirmation even if you chose "Apply & Publish" up front, and once it runs,
-Undo is withdrawn rather than offered and quietly useless. Without an `origin`
-remote that button is not offered at all — preflight refuses the *whole* apply
-on an impossible scope, so offering it would cost you the local reorder too.
+The **remote half** is `gh stack push`, `gh stack submit --auto`, and
+`gh stack link`. It takes its own confirmation even if you chose "Apply &
+Publish" up front, and once it runs, Undo is withdrawn rather than offered and
+quietly useless. Without an `origin` remote that button is not offered at all —
+preflight refuses the *whole* apply on an impossible scope, so offering it would
+cost you the local reorder too.
 
 `gh stack push` rather than a hand-rolled `git push --force-with-lease`: it does
 the per-branch lease itself and skips merged and queued branches, rules that
@@ -256,6 +257,16 @@ would otherwise have to be reproduced here and would drift as gh-stack changes
 them. It reads its branch list from `.git/gh-stack`, so it has to run *after*
 the metadata write. Pushing before submitting is not redundant even though
 submit pushes too — a rejected lease surfaces before any PR base is retargeted.
+
+`gh stack link` is what makes the pull requests read as a **stack** on GitHub
+rather than as unrelated PRs that happen to be chained by base branch. Submit
+does attempt it, but when it cannot it says so in a *warning* and still exits 0
+— so a submit that opens every PR and groups none of them looks, by exit code,
+exactly like one that worked. Linking explicitly is idempotent, and unlike
+submit it does not read `.git/gh-stack`, so it still works when local tracking
+state and GitHub disagree. It is skipped below two linkable pull requests, since
+a stack needs two, and merged branches are left out because their PRs are
+closed.
 
 On a conflict the rebase pauses in place. Resolve the listed files, stage them,
 and hit *Continue*; or *Abort* to roll everything back. See
@@ -575,7 +586,8 @@ Working:
 - Distinct UI for: not on a stack, not a git repo, gh missing, parse failure
 - Reordering disabled when the stack has merged branches — gh-stack rejects
   inserting next to one
-- Executing the plan: rebases, the gh-stack metadata rewrite, push, submit
+- Executing the plan: rebases, the gh-stack metadata rewrite, push, submit,
+  and the link that joins the resulting PRs into a stack on GitHub
 - Push & Submit as a standalone toolbar action, with no apply session
 - Conflict pause / continue / abort, with snapshot-based rollback, resolved in
   VS Code's three-way merge editor and tracked live off `.git/index`
