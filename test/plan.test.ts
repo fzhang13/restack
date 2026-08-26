@@ -2,7 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parseStack } from '../src/parse.ts';
-import { changeBasePlan, computePlan, syncPlan } from '../src/plan.ts';
+import {
+  changeBasePlan,
+  computePlan,
+  linkableBranches,
+  publishSteps,
+  syncPlan,
+} from '../src/plan.ts';
 import type { CandidateBranch } from '../src/model.ts';
 
 /** Captured from a real `gh stack view --json` run (gh-stack v0.1.0). */
@@ -95,23 +101,79 @@ test('moving the bottom branch to the top replays the whole stack', () => {
   anchors.forEach((a) => assert.match(a, /^[0-9a-f]{40}$/));
 });
 
-test('plan ends with metadata, push, then submit', () => {
+test('plan ends with metadata, push, submit, then link', () => {
   const stack = parseStack(fixture);
   const plan = computePlan(stack, ['feat/auth', 'feat/ui', 'feat/api']);
   const kinds = plan.steps.map((s) => s.kind);
-  assert.deepEqual(kinds.slice(-3), ['metadata', 'push', 'submit']);
+  assert.deepEqual(kinds.slice(-4), ['metadata', 'push', 'submit', 'link']);
 
   // `gh stack push` does per-branch --force-with-lease itself and skips merged
   // and queued branches — rules a hand-rolled `git push` would have to
   // reproduce and would drift from.
-  assert.equal(plan.steps.at(-2)!.command, 'gh stack push');
+  assert.equal(plan.steps.at(-3)!.command, 'gh stack push');
   // --auto is required: the interactive editor cannot run from a webview.
-  assert.equal(plan.steps.at(-1)!.command, 'gh stack submit --auto');
+  assert.equal(plan.steps.at(-2)!.command, 'gh stack submit --auto');
 
   // Push must follow the metadata write: gh-stack reads its branch list from
   // that file, so pushing first would push the pre-reorder set.
   const metadata = kinds.indexOf('metadata');
   assert.ok(metadata < kinds.indexOf('push'));
+});
+
+test('the link step names the proposed order, bottom-to-top, on this stack’s trunk', () => {
+  const stack = parseStack(fixture);
+  const plan = computePlan(stack, ['feat/auth', 'feat/ui', 'feat/api']);
+
+  // The order linked is the order the reorder produces, not the one on disk —
+  // linking the old order would group the right PRs in the wrong sequence.
+  //
+  // --base is explicit because gh-stack defaults it to the repository default
+  // branch, which Change base makes a different thing from this stack's trunk.
+  assert.equal(
+    plan.steps.at(-1)!.command,
+    'gh stack link --base main feat/auth feat/ui feat/api',
+  );
+
+  // Link runs after submit: it can only group pull requests that exist.
+  const kinds = plan.steps.map((s) => s.kind);
+  assert.ok(kinds.indexOf('submit') < kinds.indexOf('link'));
+});
+
+test('the link step drops merged branches and disappears below two', () => {
+  const stack = parseStack(fixture);
+  const order = stack.branches.map((b) => b.name);
+  assert.deepEqual(linkableBranches(stack, order), ['feat/auth', 'feat/api', 'feat/ui']);
+
+  // A merged branch's PR is closed, and gh-stack refuses to link a closed PR.
+  const withMerged = {
+    ...stack,
+    branches: stack.branches.map((b) => (b.name === 'feat/api' ? { ...b, isMerged: true } : b)),
+  };
+  assert.deepEqual(linkableBranches(withMerged, order), ['feat/auth', 'feat/ui']);
+
+  // Queued branches stay: gh-stack keeps PRs in the merge queue stacked, so
+  // dropping them would shrink the stack every time one was queued.
+  const withQueued = {
+    ...stack,
+    branches: stack.branches.map((b) => (b.name === 'feat/api' ? { ...b, isQueued: true } : b)),
+  };
+  assert.deepEqual(linkableBranches(withQueued, order), order);
+
+  // A stack object needs two or more PRs, and `gh stack link` needs two or
+  // more arguments — so one linkable branch means no step at all, not a step
+  // that is guaranteed to fail.
+  assert.deepEqual(
+    publishSteps('main', ['feat/auth']).map((s) => s.kind),
+    ['push', 'submit'],
+  );
+  assert.deepEqual(
+    publishSteps('main', []).map((s) => s.kind),
+    ['push', 'submit'],
+  );
+  assert.deepEqual(
+    publishSteps('main', ['feat/auth', 'feat/ui']).map((s) => s.kind),
+    ['push', 'submit', 'link'],
+  );
 });
 
 test('the metadata step is a shell comment, so copied plans stay pasteable', () => {
@@ -340,7 +402,7 @@ test('syncPlan fast-forwards the trunk, then replays the whole stack', () => {
   const plan = syncPlan(stack, 'origin', false);
   assert.deepEqual(
     plan.steps.map((s) => s.kind),
-    ['trunk', 'rebase', 'rebase', 'rebase', 'metadata', 'push', 'submit'],
+    ['trunk', 'rebase', 'rebase', 'rebase', 'metadata', 'push', 'submit', 'link'],
   );
 
   // The trunk moves first: everything after it replays onto the new tip.

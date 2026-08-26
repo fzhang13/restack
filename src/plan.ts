@@ -163,7 +163,7 @@ export function computePlan(
       note: 'Rebasing does not update gh-stack’s own state file. Without this, `gh stack view` reports the old order and submit retargets the wrong bases.',
     });
 
-    steps.push(...publishSteps());
+    steps.push(...publishSteps(stack.trunk, linkableBranches(stack, proposedOrder)));
   }
 
   return { steps, proposedOrder, isNoop, mergedBranches, insertedBranches, removedBranches };
@@ -315,7 +315,22 @@ export function installArgs(): string[] {
 }
 
 /**
- * The remote half: push, then submit.
+ * The argv for joining pull requests into a stack on GitHub:
+ * `gh stack link --base <trunk> a b c`, with branches bottom-to-top.
+ *
+ * `--base` is passed explicitly because gh-stack defaults it to the
+ * *repository* default branch, which is not the same thing as this stack's
+ * trunk — Change base exists precisely so a stack can sit on something else.
+ *
+ * Beside the other command builders for the same reason as `initArgs`: the
+ * argv the plan previews is the argv that runs.
+ */
+export function linkArgs(trunk: string, branches: string[]): string[] {
+  return ['stack', 'link', '--base', trunk, ...branches];
+}
+
+/**
+ * The remote half: push, submit, then link.
  *
  * `gh stack push` does per-branch `--force-with-lease` itself and skips merged
  * and queued branches, so it replaces a hand-rolled `git push` over a branch
@@ -326,13 +341,32 @@ export function installArgs(): string[] {
  * Pushing before submitting is not redundant even though submit pushes too: a
  * rejected lease surfaces here, before any PR base has been retargeted.
  *
- * Shared with the standalone Push & Submit action, which runs these two steps
- * with no reorder in front of them.
+ * The link step is the one that makes the pull requests read as a stack on
+ * GitHub rather than as unrelated PRs that happen to be chained by base
+ * branch. `gh stack submit` does attempt it — v0.1.0 runs
+ * runSubmit -> syncStack -> updateStack -> createNewStack — but it reports a
+ * failure there through a *warning* and still exits 0, so a submit that opens
+ * every PR and creates no stack object is indistinguishable from one that
+ * worked. `gh stack link` is the dedicated path for it, is documented as
+ * idempotent ("If the PRs are not yet in a stack, a new stack is created. If
+ * some of the PRs are already in a stack, the existing stack is updated"), and
+ * deliberately does not read `.git/gh-stack` — so it still works when the
+ * local tracking state and GitHub disagree, which is the state a reorder is
+ * most likely to leave behind.
+ *
+ * `linkable` is bottom-to-top and must already exclude merged branches: their
+ * pull requests are closed, and gh-stack refuses to link a closed PR. Fewer
+ * than two leaves the step out entirely — a stack object needs two or more PRs
+ * ("when two or more PRs exist", `gh stack sync --help`), and `gh stack link`
+ * requires at least two arguments.
+ *
+ * Shared with the standalone Push & Submit action, which runs these steps with
+ * no reorder in front of them.
  */
-export function publishSteps(): PlanStep[] {
+export function publishSteps(trunk: string, linkable: string[]): PlanStep[] {
   const pushArgs = ['stack', 'push'];
   const submitArgs = ['stack', 'submit', '--auto'];
-  return [
+  const steps: PlanStep[] = [
     {
       kind: 'push',
       command: `gh ${pushArgs.join(' ')}`,
@@ -344,7 +378,32 @@ export function publishSteps(): PlanStep[] {
       kind: 'submit',
       command: `gh ${submitArgs.join(' ')}`,
       exec: { file: 'gh', args: submitArgs },
-      note: 'Retargets each PR base and updates the stack on GitHub. --auto skips the interactive editor.',
+      note: 'Opens or updates a pull request per branch and retargets each base. --auto skips the interactive editor.',
     },
   ];
+
+  if (linkable.length >= 2) {
+    const args = linkArgs(trunk, linkable);
+    steps.push({
+      kind: 'link',
+      command: `gh ${args.join(' ')}`,
+      exec: { file: 'gh', args },
+      note: 'Joins those pull requests into one stack on GitHub. Submit tries this itself but only warns when it fails, so it is run explicitly. Safe to repeat.',
+    });
+  }
+
+  return steps;
+}
+
+/**
+ * The branches of `order` whose pull requests can be linked into a stack:
+ * everything but the merged ones.
+ *
+ * Queued branches stay in — gh-stack keeps PRs that are queued for merge or
+ * have auto-merge enabled stacked on GitHub, so dropping them here would
+ * shrink the stack every time one entered the merge queue.
+ */
+export function linkableBranches(stack: Stack, order: string[]): string[] {
+  const merged = new Set(stack.branches.filter((b) => b.isMerged).map((b) => b.name));
+  return order.filter((name) => !merged.has(name));
 }

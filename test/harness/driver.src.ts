@@ -1,5 +1,11 @@
 import { parseStack } from '../../src/parse';
-import { changeBasePlan, computePlan, publishSteps, syncPlan } from '../../src/plan';
+import {
+  changeBasePlan,
+  computePlan,
+  linkableBranches,
+  publishSteps,
+  syncPlan,
+} from '../../src/plan';
 import type {
   CandidateBranch,
   RemoteStackSummary,
@@ -381,7 +387,7 @@ function handleAdd(name: string) {
 function fakeApply(order: string[]) {
   const plan = computePlan(stack, order, candidates);
   const statuses = plan.steps.map((s) =>
-    s.kind === 'push' || s.kind === 'submit' ? 'skipped' : 'done',
+    s.kind === 'push' || s.kind === 'submit' || s.kind === 'link' ? 'skipped' : 'done',
   );
   window.postMessage(
     {
@@ -400,9 +406,12 @@ function fakeApply(order: string[]) {
   );
 }
 
-/** The standalone toolbar action: a two-step plan with no reorder in front. */
+/** The standalone toolbar action: the remote steps with no reorder in front. */
 function fakePushSubmit() {
-  const steps = publishSteps();
+  const steps = publishSteps(
+    stack.trunk,
+    linkableBranches(stack, stack.branches.map((b) => b.name)),
+  );
   window.postMessage(
     {
       type: 'apply',

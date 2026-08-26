@@ -23,8 +23,8 @@ export async function confirmApply(
   // preflight refuses the whole apply, so the local reorder the user also
   // asked for never runs either.
   const publishNote = canPublish
-    ? `"Apply & Publish" additionally force-pushes and runs gh stack submit, ` +
-      `which updates your pull requests on GitHub. You will be asked to confirm ` +
+    ? `"Apply & Publish" additionally force-pushes, runs gh stack submit, and ` +
+      `links the results into a stack on GitHub. You will be asked to confirm ` +
       `that separately.`
     : `This repository has no origin remote, so there is nothing to publish to.`;
 
@@ -162,8 +162,9 @@ export async function confirmPublish(): Promise<boolean> {
     {
       modal: true,
       detail:
-        'Force-pushes the rebased branches with --force-with-lease, then runs ' +
-        '`gh stack submit --auto` to retarget each PR base.\n\n' +
+        'Force-pushes the rebased branches with --force-with-lease, runs ' +
+        '`gh stack submit --auto` to retarget each PR base, then ' +
+        '`gh stack link` to join those PRs into a stack on GitHub.\n\n' +
         'This changes pull requests other people may already be reviewing, and ' +
         'Restack cannot undo it.',
     },
@@ -179,7 +180,8 @@ export async function confirmPushSubmit(): Promise<boolean> {
       modal: true,
       detail:
         'Runs `gh stack push` (per-branch --force-with-lease), then ' +
-        '`gh stack submit --auto` to create or retarget each PR.\n\n' +
+        '`gh stack submit --auto` to create or retarget each PR, then ' +
+        '`gh stack link` to join those PRs into a stack on GitHub.\n\n' +
         'This pushes the stack as it is on disk right now, whether or not ' +
         'Restack applied it. It changes pull requests other people may already ' +
         'be reviewing, and Restack cannot undo it.',

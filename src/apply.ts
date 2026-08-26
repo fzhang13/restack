@@ -13,7 +13,7 @@ import {
   type RunResult,
 } from './git.ts';
 import { basesForOrder, rewriteMetadata } from './metadata.ts';
-import { publishSteps } from './plan.ts';
+import { linkableBranches, publishSteps } from './plan.ts';
 import { branchesBehind, readAllTracking } from './remote.ts';
 import type { ApplyProgress, ApplyScope, Plan, PlanStep, Stack } from './model.ts';
 
@@ -124,6 +124,32 @@ async function revParse(cwd: string, ref: string): Promise<string | undefined> {
 export { run as runCommand, firstLine, gitCommonDir, hasOrigin, ApplyError } from './git.ts';
 export type { RunResult } from './git.ts';
 export { rebaseInProgress, unmergedFiles };
+
+/**
+ * gh-stack reports a stack it could not create or update as a *warning* and
+ * still exits 0. Verified against v0.1.0: `runSubmit` reaches `createNewStack`
+ * through `syncStack` -> `updateStack`, and both report through
+ * `config.Warningf` on a path that leaves the exit code alone. So a submit
+ * that opens every pull request and links none of them is, by exit code,
+ * indistinguishable from one that worked — which is how a stack ends up on
+ * GitHub as a row of unrelated PRs while the panel says it was published.
+ *
+ * Matching another tool's prose is a liability and this is deliberately only a
+ * safety net; the `link` step is what actually creates the stack. So it is
+ * scoped to the two steps that can print these, and kept to the explicit
+ * failure wordings — a phrasing change costs a missed warning, never a false
+ * failure on a publish that worked. "Skipping stack recreation" is left out on
+ * purpose: it is also printed when there is legitimately nothing to recreate.
+ */
+const STACK_NOT_LINKED = /^[^\n]*\b(?:could not|cannot|failed to) (?:create|update) stack\b[^\n]*/im;
+
+export function stackWarning(step: PlanStep, result: RunResult): string | undefined {
+  if (step.kind !== 'submit' && step.kind !== 'link') {
+    return undefined;
+  }
+  const match = STACK_NOT_LINKED.exec(`${result.stdout}\n${result.stderr}`);
+  return match ? match[0].trim() : undefined;
+}
 
 /**
  * Refuse to start unless the repository is in a state where every step is
@@ -408,8 +434,8 @@ export class ApplyRunner {
       );
     }
 
-    const steps = publishSteps();
     const order = stack.branches.map((b) => b.name);
+    const steps = publishSteps(stack.trunk, linkableBranches(stack, order));
     const head = await run('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd);
 
     this.session = {
@@ -538,7 +564,7 @@ export class ApplyRunner {
 
     while (session.cursor < session.plan.steps.length) {
       const step = session.plan.steps[session.cursor];
-      const remote = step.kind === 'push' || step.kind === 'submit';
+      const remote = step.kind === 'push' || step.kind === 'submit' || step.kind === 'link';
 
       if (remote && session.scope === 'local') {
         // Local scope stops here; the UI offers publish as a separate action.
@@ -592,7 +618,19 @@ export class ApplyRunner {
     const result = await run(file, step.exec.args, session.cwd, timeout);
 
     if (result.code === 0) {
-      return false;
+      // Exit 0 is not the whole story for submit and link — see stackWarning.
+      const warning = stackWarning(step, result);
+      if (!warning) {
+        return false;
+      }
+      session.statuses[session.cursor] = 'failed';
+      this.publishProgress({
+        phase: 'failed',
+        message:
+          `${warning} The pull requests are on GitHub but are not joined into a stack. ` +
+          'Nothing local was lost; retrying Push & submit is safe.',
+      });
+      return true;
     }
 
     if (step.kind === 'rebase') {
