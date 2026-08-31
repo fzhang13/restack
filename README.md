@@ -64,8 +64,9 @@ afterwards:
   runs the same plan-then-apply path as a reorder — steps on screen first,
   conflicts pause, undo available.
 - **It checks out the top branch, after writing `.git/gh-stack`.** A dirty tree
-  that blocks that checkout leaves a stack half-created, so Restack refuses to
-  run init at all until the tree is clean.
+  that blocks that checkout leaves a stack half-created, so Restack will not run
+  init at all until the tree is clean — it offers to stash for you first, and
+  refuses if you decline.
 
 If stacks exist but the current branch is not in one, the panel lists them with
 a **Check out** button above the builder — that is usually what you wanted, not
@@ -135,6 +136,36 @@ To move somewhere else, take whichever route is nearest:
 
 All four refuse for the same reasons: a dirty worktree, an apply in flight, or a
 rebase already in progress — checking out mid-rebase abandons it.
+
+### A dirty working tree
+
+Every operation that moves HEAD needs a clean tree, and rather than refusing
+outright Restack offers to do the two commands you would otherwise run by hand.
+Check out a branch, add or remove one, initialize a stack, apply a reorder,
+rebase, sync, or change the base with uncommitted changes and you get a dialog
+naming the files, with **Stash and continue**. Decline it and you get the
+refusal you always got.
+
+Say yes and Restack runs `git stash push` before the operation and
+`git stash pop` after it. Two details are deliberate:
+
+- **Untracked files are left alone** — no `-u`. That matches every dirty check
+  in Restack, all of which pass `--untracked-files=no`, so a stash never carries
+  away a file the refusal was not about.
+- **The stash is found by commit SHA, never `stash@{0}`.** The stash is a stack
+  and you have a terminal; if you push another one while a reorder is running,
+  Restack still pops the right entry.
+
+For an apply the stash is held for the whole session rather than popped the
+moment the rebases land. A finished local apply still offers **Roll back**,
+which reaches its snapshot through `git checkout --force` — restoring your
+changes in front of that would put them where that command destroys them. So
+the stash comes back on whichever of publish, roll back, or dismiss happens
+first, and the panel says so while it is waiting. It survives a window reload
+along with the rest of the session. Dismissing an apply that is paused on a
+conflict is the one case where nothing is popped: the tree cannot take it. You
+are told the `stash@{N}` to pop yourself, and the same goes for a pop that
+conflicts — nothing is dropped until you drop it.
 
 ### What is actually in a branch
 
@@ -268,14 +299,36 @@ palette.
 Standing on a trunk shared by several stacks is its own position: gh-stack has
 no single stack to report, so Restack shows the switcher rather than an error.
 
+### Several folders in one workspace
+
+Restack reads one repository at a time. In a single-root window that is the
+folder you opened and there is nothing to decide; in a multi-root workspace it
+resolves in the cheapest order that can be right:
+
+1. **One folder** — that one. No probe, no stored value, no question, so a
+   single-root window costs exactly what it always did.
+2. **A folder you have already chosen here**, if it is still open.
+3. Otherwise Restack checks each folder for a `.git/gh-stack` — a local file
+   read, no `gh` and no network — and if **exactly one** has stacks, picks it
+   and remembers it. A repository beside a docs folder needs no input.
+4. If several do, or none does, the view lists the folders and asks. Your answer
+   is remembered for that workspace.
+
+**Restack: Select Folder…** shows the list again, marking the current one; in a
+multi-root workspace it also appears in the view's ⋯ menu. Switching is refused
+while an apply is in flight — the session holds a working directory, a branch
+snapshot, and possibly a stash, all belonging to one repository — and switching
+clears everything cached about the folder being left, so no PR badge or commit
+count crosses over from the other repository.
+
 ### Applying
 
 Apply is split in two, and the halves are not equally recoverable.
 
 The **local half** is the rebases plus the `.git/gh-stack` write. Before the
 first rebase, Restack records every branch SHA and the verbatim bytes of the
-metadata file; *Undo* restores both. It refuses to start over a dirty worktree,
-mid-rebase, or on a stack with merged branches.
+metadata file; *Undo* restores both. It refuses to start over a dirty worktree
+you declined to stash, mid-rebase, or on a stack with merged branches.
 
 The **remote half** is `gh stack push`, `gh stack submit --auto`, and
 `gh stack link`. It takes its own confirmation even if you chose "Apply &
@@ -520,6 +573,18 @@ should not get to choose what runs.
 [Stacks that live on GitHub](#stacks-that-live-on-github). It needs no scope
 `gh` does not already have, and turning it off costs only the badges it feeds.
 
+`restack.autoFetch` (default `0`, meaning off) fetches on a timer, so the
+ahead/behind counts and the sync banner stay current without you pressing
+anything. Set it from **Background Fetch…** in the view's ⋯ menu — Off, 3, 10
+or 30 minutes, or a custom interval — or as a number of seconds in settings;
+anything below 60 is treated as 60.
+
+It is off by default on purpose. The default install makes no network call you
+did not ask for, and an upgrade should not quietly change that. When it is on,
+it stays out of the way: no spinner, no error popup, nothing while the view is
+hidden or an apply is running, and failures go to the Restack output channel
+rather than a notification that would reappear every interval.
+
 ## Development
 
 ```bash
@@ -636,30 +701,30 @@ Working:
 - Basing a stack on any branch, local or remote-only — a colleague's work rather
   than the default branch — and moving an existing stack onto a different base
 - Remote state read from local refs: ahead/behind pills per row, a Fetch button
-  as the only git network call, and Sync stack to fast-forward a trunk that moved
+  as the only git network call unless you opt into `restack.autoFetch`, and Sync
+  stack to fast-forward a trunk that moved
 - Stacks read from GitHub itself, via the GraphQL `PullRequest.stack` field: a
   stack-number badge and a drift warning on stacks you already have, a
   checkout-able list of stacks that exist only on the remote, and a `PR base`
   badge when a PR targets something other than the row beneath it
-- Dirty-worktree and mid-rebase refusal before anything runs
+- Dirty-worktree and mid-rebase refusal before anything runs, with a
+  **Stash and continue** offer on the dirty half that puts your changes back
+  afterwards — held for the whole session on an apply, so Roll back stays safe
 - Refusal to rewrite a branch that is behind its upstream, which `gh stack push`
   would then force-push over
 - Apply state persisted to `workspaceState`, so a window reload mid-apply comes
   back with Continue/Abort/Undo live
 - Clickable PR links and conflicted files; `Alt+↑`/`Alt+↓` to reorder a focused
   row, double-click to check a branch out
+- Multi-root workspaces: one folder is picked automatically when only one holds
+  a stack, remembered afterwards, and changeable from **Restack: Select Folder…**
 - A **Restack** output channel logging every command, exit code, and full stderr
 
 Not built yet:
 
-- No stash offer on a dirty worktree — Restack refuses and leaves it to you.
-- Multi-root workspace support (reads the first workspace folder only).
 - A stack branch that is behind its upstream is refused, not reconciled. Pulling
   it is left to you: once both sides have moved there is no safe automatic
   answer, and guessing one is how commits go missing.
-- Nothing fetches on a schedule. The ahead/behind counts are as old as your last
-  Fetch, which the tooltip tells you, and the GitHub stack data is as old as the
-  last time the view loaded or you pressed Fetch.
 - Remote stacks are read, not written. Restack can check one out, but reordering
   or appending to a stack still happens locally and reaches GitHub through Push
   & Submit.
