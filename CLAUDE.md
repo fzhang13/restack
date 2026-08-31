@@ -42,9 +42,9 @@ That's why `vscode:prepublish` chains typecheck, test, and build.
 
 Inside `src/`:
 
-- `plan.ts` / `stack.ts` / `parse.ts` / `model.ts` — pure logic and types, no
-  I/O. The test harness bundles these into a browser page, so keep them free of
-  Node imports.
+- `plan.ts` / `stack.ts` / `parse.ts` / `model.ts` / `workspace.ts` — pure logic
+  and types, no I/O. The test harness bundles these into a browser page, so keep
+  them free of Node imports.
 - `git.ts` — the one logged place a child process spawns. `candidates.ts` keeps
   its own unlogged helper on purpose: it runs a merge-base per branch on every
   refresh, and that volume would bury the commands a user wants to read in the
@@ -60,6 +60,12 @@ Inside `src/`:
 deliberately re-read them after `await refresh()`, so passing a snapshot at call
 time breaks them subtly.
 
+`Host.cwd()` is the **only** way to learn which folder Restack is reading —
+`workspaceFolders[0]` is wrong in a multi-root workspace and there are no
+remaining uses of it. `view/folder.ts` resolves it (one folder, then a
+remembered choice, then a `.git/gh-stack` probe, then ask) and `refresh()` is
+what settles it, so `cwd()` can stay synchronous.
+
 `webview/styles.css` is nine `@import`s, cut on line boundaries rather than by
 concern. `.badge--new`, `.badge--pr-base`, and `.trunk--current` depend on their
 position in the cascade — reordering the imports changes rendering.
@@ -68,7 +74,7 @@ position in the cascade — reordering the imports changes rendering.
 
 ```bash
 npm run typecheck     # tsc --noEmit; esbuild does not typecheck
-npm test              # node --test, 156 tests, real git in temp repos
+npm test              # node --test, 213 tests, real git in temp repos
 npm run build         # or `watch`
 npm run package       # -> restack-<version>.vsix (runs prepublish first)
 npx vsce ls --tree    # exactly what would ship
@@ -82,7 +88,7 @@ never to `gh`, so they run anywhere git exists.
 `test/harness/index.html` renders the webview in a plain browser with no
 extension host. `?view=` reaches states a single fixture can't be in at once:
 `init`, `outside`, `drift`, `trunk`, `away`, `multi`, `github`, `conflict`,
-`setup`, `no-gh`, `changes`.
+`setup`, `no-gh`, `changes`, `folder`.
 Rebuild it with `node test/harness/build-driver.mjs` — it bundles the real
 `plan.ts`, so the page computes plans with the same code the extension runs.
 
