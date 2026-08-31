@@ -7,12 +7,14 @@ import {
   syncPlan,
 } from '../../src/plan';
 import type {
+  BranchChanges,
   CandidateBranch,
   RemoteStackSummary,
   RemoteState,
   StackBranch,
   StackSummary,
   Tracking,
+  WorkingTree,
 } from '../../src/model';
 import fixture from '../../fixtures/stack-no-prs.json';
 
@@ -36,6 +38,59 @@ const candidates: CandidateBranch[] = [
 ];
 
 /**
+ * What loadChanges answers with, per branch, for `?view=changes`.
+ *
+ * `feat/ui` is deliberately empty — the stack's top branch, and the one HEAD
+ * sits on in the default fixture, so it is also where the working tree
+ * fixture below shows up. Together they put both of ChangeTree's empty states
+ * on screen at once.
+ */
+const harnessChanges: Record<string, BranchChanges> = {
+  'feat/api': {
+    branch: 'feat/api',
+    base: 'a'.repeat(40),
+    tip: 'b'.repeat(40),
+    files: [
+      { status: 'M', path: 'src/api.ts' },
+      { status: 'A', path: 'src/route.ts' },
+      { status: 'R', path: 'src/handlers/user.ts', oldPath: 'src/user.ts' },
+    ],
+    commits: [
+      {
+        sha: 'b'.repeat(40),
+        shortSha: 'bbbbbbb',
+        subject: 'fix types on the route handler',
+        author: 'Ada',
+        relativeDate: '2 hours ago',
+        files: [{ status: 'M', path: 'src/api.ts' }],
+      },
+      {
+        sha: 'c'.repeat(40),
+        shortSha: 'ccccccc',
+        subject: 'add route',
+        author: 'Ada',
+        relativeDate: '3 days ago',
+        files: [
+          { status: 'A', path: 'src/route.ts' },
+          { status: 'R', path: 'src/handlers/user.ts', oldPath: 'src/user.ts' },
+        ],
+      },
+    ],
+  },
+  // An empty branch, so the "no commits of its own yet" state is reachable.
+  'feat/ui': { branch: 'feat/ui', base: 'd'.repeat(40), tip: 'd'.repeat(40), files: [], commits: [] },
+};
+
+const harnessWorkingTree: WorkingTree = {
+  branch: 'feat/ui',
+  staged: [{ status: 'M', path: 'src/webview/views/StackView.tsx' }],
+  unstaged: [{ status: 'M', path: 'src/changes.ts' }],
+  untracked: ['scratch.md'],
+};
+
+const harnessCounts: Record<string, number> = { 'feat/auth': 1, 'feat/api': 2, 'feat/ui': 0 };
+
+/**
  * Which state to render, chosen with `?view=` so all of them are reachable
  * without editing this file:
  *
@@ -55,6 +110,7 @@ const candidates: CandidateBranch[] = [
  *                 stack that exists only on the remote
  *   ?view=setup   gh is installed, gh-stack is not — the install screen
  *   ?view=no-gh   no gh CLI at all, the one Restack cannot fix for you
+ *   ?view=changes the stack view with counts and an expanded branch's contents
  */
 const view = new URLSearchParams(location.search).get('view') ?? '';
 
@@ -221,6 +277,7 @@ function sendStack() {
         canPublish: false,
         stacks: [],
         remoteStacks: [],
+        commitCounts: {},
       },
       '*',
     );
@@ -242,6 +299,7 @@ function sendStack() {
         canPublish: true,
         stacks: view === 'outside' ? localStacks : [],
         remoteStacks: [],
+        commitCounts: {},
       },
       '*',
     );
@@ -298,6 +356,10 @@ function sendStack() {
       // Everywhere else this is empty, which is both the common repository and
       // what `restack.readRemoteStacks: false` produces.
       remoteStacks: view === 'github' ? remoteOnly : [],
+      // Counts are always on in the real host, so they are on in every view
+      // here too. The tree and the working tree are the changes view's own.
+      commitCounts: harnessCounts,
+      workingTree: view === 'changes' ? harnessWorkingTree : undefined,
     },
     '*',
   );
@@ -491,6 +553,21 @@ function fakePushSubmit() {
     // Host-side effects with no browser equivalent. Logged so a dead click is
     // distinguishable from one that fired.
     console.log('[harness]', m.type, m.url ?? m.path ?? m.branch);
+  } else if (m.type === 'loadChanges') {
+    // The host would spawn git here. A branch with no fixture answers with
+    // nothing at all, which is the same thing the real host does when the
+    // request races a refresh — and leaves the row's "Reading…" state visible.
+    const found = harnessChanges[m.branch];
+    if (found) {
+      window.postMessage({ type: 'changes', changes: found }, '*');
+    } else {
+      console.log('[harness] loadChanges', m.branch, '— no fixture');
+    }
+  } else if (m.type === 'openCommitFile' || m.type === 'openWorkingFile') {
+    // Host-side: there is no editor here to open a diff in.
+    // A branch-range row carries the base it should diff against; a per-commit
+    // row carries none and means the commit's parent.
+    console.log('[harness]', m.type, m.path, m.sha ?? '', m.base ?? '');
   }
 };
 

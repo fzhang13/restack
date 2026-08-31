@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { handleInstallGhStack } from './view/operations/setup';
 import { StackViewProvider } from './view/provider';
+import { BlobProvider, RESTACK_SCHEME } from './view/documents';
 
 export function activate(context: vscode.ExtensionContext): void {
   const log = vscode.window.createOutputChannel('Restack');
@@ -14,6 +15,10 @@ export function activate(context: vscode.ExtensionContext): void {
     log,
     status,
     vscode.window.registerWebviewViewProvider('restack.stackView', provider),
+    vscode.workspace.registerTextDocumentContentProvider(
+      RESTACK_SCHEME,
+      new BlobProvider(() => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath),
+    ),
     vscode.commands.registerCommand('restack.refresh', () => provider.refresh()),
     vscode.commands.registerCommand('restack.pushSubmit', () => provider.pushSubmit()),
     vscode.commands.registerCommand('restack.rebaseStack', () => provider.rebaseStack()),

@@ -4,6 +4,7 @@ import { readBranchCandidates } from '../candidates';
 import { computePlan } from '../plan';
 import { readRemoteState } from '../remote';
 import { ApplyRunner, hasOrigin, type PersistedSession } from '../apply';
+import { ChangesReader, readTips } from '../changes';
 import { detectTrunk } from '../init';
 import { emptyGraph, readGithubGraph } from '../github';
 import { readPullRequests, readStackSummaries, remoteOnlyStacks } from '../stacks';
@@ -18,6 +19,7 @@ import type {
   StackResult,
   StackSummary,
   WebviewMessage,
+  WorkingTree,
 } from '../model';
 import { git, resolves } from './git';
 import type { Host } from './host';
@@ -27,6 +29,8 @@ import { updateStatus } from './status';
 import { handleAddBranch } from './operations/add';
 import { handleApply, handlePublish, handlePushSubmit } from './operations/apply';
 import { handleChangeBase } from './operations/base';
+import { handleLoadChanges } from './operations/changes';
+import { openCommitDiff, openWorkingDiff } from './documents';
 import {
   handleCheckout,
   handleCheckoutRemoteStack,
@@ -76,6 +80,11 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
   private lastStacks: StackSummary[] = [];
   /** Stacks GitHub knows about and this clone does not. See stacks.ts. */
   private lastRemoteStacks: RemoteStackSummary[] = [];
+  /** Reads and caches per-branch commits and counts. See changes.ts. */
+  private readonly changesReader = new ChangesReader();
+  private lastTips = new Map<string, string>();
+  private lastCounts: Record<string, number> = {};
+  private lastWorkingTree?: WorkingTree;
   /**
    * What GitHub says about this repository: its pull requests keyed by head
    * branch, and the stacks those PRs belong to.
@@ -138,6 +147,12 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
   get order(): string[] | undefined {
     return this.lastOrder;
   }
+  get changes(): ChangesReader {
+    return this.changesReader;
+  }
+  get tips(): Map<string, string> {
+    return this.lastTips;
+  }
 
   /**
    * Start or stop watching the git index.
@@ -176,6 +191,48 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
     );
     // A backstop only: the pair above is what normally disposes it.
     this.context.subscriptions.push(this.indexWatcher);
+  }
+
+  /**
+   * Keep the working-tree section current.
+   *
+   * Two signals, because neither is sufficient. `.git/index` moves when a file
+   * is staged but not when it is edited; a save moves the file but not the
+   * index. Both post only the working tree — a full refresh here would re-read
+   * the stack, and reach gh, every time the user hits save.
+   *
+   * Silent while an apply owns the repository: a rebase writes the index
+   * constantly, and none of it is the user's uncommitted work.
+   */
+  private watchWorkingTree(): vscode.Disposable {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bump = () => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+      timer = setTimeout(() => {
+        timer = undefined;
+        void this.postWorkingTree();
+      }, 250);
+    };
+
+    const watcher = vscode.workspace.createFileSystemWatcher('**/.git/index');
+    return vscode.Disposable.from(
+      watcher,
+      watcher.onDidChange(bump),
+      watcher.onDidCreate(bump),
+      vscode.workspace.onDidSaveTextDocument(bump),
+      new vscode.Disposable(() => timer && clearTimeout(timer)),
+    );
+  }
+
+  private async postWorkingTree(): Promise<void> {
+    const cwd = this.cwd();
+    if (!cwd || this.runner.active) {
+      return;
+    }
+    this.lastWorkingTree = await this.changesReader.workingTree(cwd);
+    this.post({ type: 'workingTree', workingTree: this.lastWorkingTree });
   }
 
   /**
@@ -308,8 +365,17 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
         case 'openMergeEditor':
           void openMergeEditor(this, message.path);
           break;
+        case 'openCommitFile':
+          void openCommitDiff(this, message.sha, message.path, message.oldPath, message.base);
+          break;
+        case 'openWorkingFile':
+          void openWorkingDiff(this, message.path);
+          break;
         case 'checkout':
           void handleCheckout(this, message.branch);
+          break;
+        case 'loadChanges':
+          void handleLoadChanges(this, message.branch);
           break;
         case 'switchStack':
           void handleSwitchStack(this, message.index);
@@ -342,6 +408,7 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
       }
     });
     this.context.subscriptions.push(watcher);
+    this.context.subscriptions.push(this.watchWorkingTree());
   }
 
   post(message: HostMessage): void {
@@ -598,6 +665,7 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
         canPublish: false,
         stacks: [],
         remoteStacks: [],
+        commitCounts: {},
       });
       return;
     }
@@ -609,6 +677,22 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
     // Local ref reads only — no network — so this is safe on the .git/HEAD
     // watcher path, which fires on every checkout and every rebase step.
     this.lastRemote = this.lastStack ? await readRemoteState(cwd, this.lastStack) : undefined;
+    // One `for-each-ref` for every branch head, and the working tree, together
+    // — then the per-branch counts, which need the tips and are memoised on
+    // `<base>..<tip>`. A refresh where nothing moved therefore spawns two
+    // processes here in total, not one per branch.
+    [this.lastTips, this.lastWorkingTree] = await Promise.all([
+      readTips(cwd),
+      this.changesReader.workingTree(cwd),
+    ]);
+    const stackBranches = this.lastStack?.branches ?? [];
+    this.lastCounts = await this.changesReader.commitCounts(
+      cwd,
+      stackBranches.map((b) => ({ name: b.name, base: b.base })),
+      this.lastTips,
+    );
+    // Anything cached for a branch that has left the stack is dead weight now.
+    this.changesReader.prune(stackBranches.map((b) => b.name));
     // The plan described the pre-refresh order; holding on to it would let a
     // later apply run stale commands.
     this.lastPlan = undefined;
@@ -653,6 +737,8 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
       remote: this.lastRemote,
       stacks: this.lastStacks,
       remoteStacks: this.lastRemoteStacks,
+      commitCounts: this.lastCounts,
+      workingTree: this.lastWorkingTree,
     });
 
     // After the post, like the GitHub read below: the setup screen is the
