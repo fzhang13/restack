@@ -3,6 +3,7 @@ import { initArgs } from '../../plan';
 import { initPreflight, runInit } from '../../init';
 import { blockedByApply, type Host } from '../host';
 import { resolveRemoteBase } from './base';
+import { offerStash, restoreStash } from './stash';
 
 /**
  * Create a stack from the branches the user dragged into order.
@@ -44,9 +45,17 @@ export async function handleInitStack(
       base = resolved;
     }
 
+    // After resolveRemoteBase, which can create a local branch, and before the
+    // preflight that refuses a dirty tree. `gh stack init` ends by checking out
+    // the top branch, which is what the clean tree is for.
+    const stash = await offerStash(cwd, host, 'Creating the stack');
+
     const blocked = await initPreflight(cwd, base, branches);
     if (blocked) {
       void vscode.window.showErrorMessage(`Restack: ${blocked}`);
+      if (stash) {
+        await restoreStash(cwd, host, stash);
+      }
       return;
     }
 
@@ -55,6 +64,12 @@ export async function handleInitStack(
     if (failure) {
       void vscode.window.showErrorMessage(`Restack: ${failure}`);
       host.log.show(true);
+    }
+
+    // Restore before the refresh, so the working-tree section renders the
+    // files as they are once everything has settled rather than mid-flight.
+    if (stash) {
+      await restoreStash(cwd, host, stash);
     }
 
     // Refresh either way: a failed init can still have written part of the

@@ -3,6 +3,7 @@ import { addArgs } from '../../plan';
 import { addPreflight, runAdd } from '../../init';
 import { checkout } from '../git';
 import { blockedByApply, type Host } from '../host';
+import { offerStash, restoreStash } from './stash';
 
 /**
  * Extend an existing stack by one branch, on top of it.
@@ -38,9 +39,16 @@ export async function handleAddBranch(host: Host, branch: string): Promise<void>
   const names = stack.branches.map((b) => b.name);
 
   await host.guard(async () => {
+    // Before addPreflight, which is where the dirty-tree refusal lives. The
+    // stash is held across both checkouts and the `gh stack add` between them.
+    const stash = await offerStash(cwd, host, `Adding ${name} to the stack`);
+
     const blocked = await addPreflight(cwd, stack.trunk, names, name);
     if (blocked) {
       void vscode.window.showErrorMessage(`Restack: ${blocked}`);
+      if (stash) {
+        await restoreStash(cwd, host, stash);
+      }
       return;
     }
 
@@ -53,6 +61,9 @@ export async function handleAddBranch(host: Host, branch: string): Promise<void>
       const moved = await checkout(cwd, top);
       if (moved) {
         void vscode.window.showErrorMessage(`Restack: ${moved}`);
+        if (stash) {
+          await restoreStash(cwd, host, stash);
+        }
         return;
       }
     }
@@ -67,6 +78,9 @@ export async function handleAddBranch(host: Host, branch: string): Promise<void>
     // Either way, for init's reason: a failed add can still have created the
     // branch, and the view has to show what is actually on disk. Success also
     // moves HEAD onto the new branch, which the indicator should follow.
+    if (stash) {
+      await restoreStash(cwd, host, stash);
+    }
     await host.refresh();
   });
 }

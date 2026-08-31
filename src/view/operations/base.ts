@@ -11,6 +11,7 @@ import {
 import type { Stack } from '../../model';
 import { blockedByApply, type Host } from '../host';
 import { confirmChangeBase } from '../prompts';
+import { offerStash, restoreStash, startWithStash } from './stash';
 
 /**
  * Turn a picked remote-tracking ref into a local branch fit to base a stack
@@ -179,11 +180,16 @@ export async function handleChangeBase(
       return;
     }
 
+    const stash = await offerStash(cwd, host, `Moving the stack onto ${local}`);
+
     // Against the *new* trunk: its merge-base check is exactly the question
     // of whether these branches can be replayed onto it at all.
     const blocked = await preflight(cwd, rebased, 'local', order);
     if (blocked) {
       void vscode.window.showErrorMessage(`Restack: ${blocked}`);
+      if (stash) {
+        await restoreStash(cwd, host, stash);
+      }
       return;
     }
 
@@ -196,6 +202,9 @@ export async function handleChangeBase(
     const bottom = order[0];
     const withPr = stack.branches[0]?.prNumber;
     if (!(await confirmChangeBase(stack.trunk, local, bottom, staleness, withPr))) {
+      if (stash) {
+        await restoreStash(cwd, host, stash);
+      }
       return;
     }
 
@@ -203,7 +212,9 @@ export async function handleChangeBase(
 
     // The modified stack, not the original: this is what writeMetadata reads
     // the trunk from, and so what lands in .git/gh-stack.
-    await host.runner.start(cwd, host.ghPath(), rebased, plan, order, 'local');
+    await startWithStash(cwd, host, stash, () =>
+      host.runner.start(cwd, host.ghPath(), rebased, plan, order, 'local', stash),
+    );
     await host.refresh();
   });
 }

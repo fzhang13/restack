@@ -22,7 +22,7 @@ export async function openUrl(url: string): Promise<void> {
  * folder root rather than trusted.
  */
 export async function openFile(host: Host, relative: string): Promise<void> {
-  const target = resolveInWorkspace(relative);
+  const target = resolveInWorkspace(host.cwd(), relative);
   if (!target) {
     return;
   }
@@ -44,7 +44,7 @@ export async function openFile(host: Host, relative: string): Promise<void> {
  * the fallback rather than a dead button.
  */
 export async function openMergeEditor(host: Host, relative: string): Promise<void> {
-  const target = resolveInWorkspace(relative);
+  const target = resolveInWorkspace(host.cwd(), relative);
   if (!target) {
     return;
   }

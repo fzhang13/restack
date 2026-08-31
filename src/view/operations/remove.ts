@@ -3,6 +3,7 @@ import { unstackArgs } from '../../plan';
 import { runUnstack, unstackPreflight } from '../../init';
 import { blockedByApply, type Host } from '../host';
 import { confirmRemove } from '../prompts';
+import { offerStash, restoreStash } from './stash';
 
 /**
  * Dissolve the stack — the missing counterpart to init.
@@ -33,9 +34,16 @@ export async function handleRemoveStack(host: Host): Promise<void> {
   }
 
   await host.guard(async () => {
+    // `gh stack unstack` may check out a branch, which is why its preflight
+    // refuses a dirty tree; the offer goes in front of that refusal.
+    const stash = await offerStash(cwd, host, 'Removing the stack');
+
     const blocked = await unstackPreflight(cwd, scope);
     if (blocked) {
       void vscode.window.showErrorMessage(`Restack: ${blocked}`);
+      if (stash) {
+        await restoreStash(cwd, host, stash);
+      }
       return;
     }
 
@@ -45,6 +53,10 @@ export async function handleRemoveStack(host: Host): Promise<void> {
     if (failure) {
       void vscode.window.showErrorMessage(`Restack: ${failure}`);
       host.log.show(true);
+    }
+
+    if (stash) {
+      await restoreStash(cwd, host, stash);
     }
 
     // Re-read either way. A remote unstack that GitHub only partly allowed —
