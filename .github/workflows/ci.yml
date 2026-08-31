@@ -1,0 +1,49 @@
+# Typechecks and tests every push to main and every pull request against it.
+#
+# Nothing here builds or ships anything: packaging happens in release.yml, which
+# runs on a v* tag and is the gate that actually matters before a release. This
+# is the cheap check that keeps main green in between.
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# A pull request pushed twice in a minute does not need both runs. The ref is
+# the group, so main and each PR cancel only themselves.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same pin release.yml uses, on purpose: the tests run .ts directly
+      # under --experimental-strip-types, which needs 22+ and has behaved
+      # differently across majors. CI must not pass on a version the release
+      # job would fail on.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # esbuild strips types without checking them, so this is the only thing
+      # standing between a type error and a shipped build.
+      - run: npm run typecheck
+
+      # Shells out to real git in temp repos. test/support/repo.ts sets its own
+      # user.email/user.name, so a bare runner with no git identity is fine.
+      - run: npm test
