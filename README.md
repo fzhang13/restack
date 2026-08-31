@@ -136,6 +136,39 @@ To move somewhere else, take whichever route is nearest:
 All four refuse for the same reasons: a dirty worktree, an apply in flight, or a
 rebase already in progress — checking out mid-rebase abandons it.
 
+### What is actually in a branch
+
+A stack view that shows only branch names asks you to remember what you put in
+each one. Reordering is a decision about content — whether `feat/api` really
+sits on top of `feat/auth` depends on what each of them touches — and until now
+answering that meant leaving for a terminal.
+
+Every row in the *Current* column carries a count of the commits it owns, and a
+twisty that opens it:
+
+![Restack with two branches expanded: one showing its files and commits, the other showing the working tree](https://raw.githubusercontent.com/fzhang13/restack/main/media/screenshot-changes.png)
+
+An expanded branch shows three things, top to bottom:
+
+- **The working tree**, but only on the branch you are standing on — staged,
+  unstaged, and untracked, kept separate, because "modified" and "modified and
+  staged" are different answers to *is this safe to rebase*. It updates when you
+  save and when you stage, without re-reading the stack.
+- **The branch's own file summary** — everything between its base and its tip,
+  which is the diff its pull request will contain. A rename shows as one entry
+  with both paths, not as a delete and an add.
+- **Its commits**, newest first, each of which opens to the files that one
+  commit touched.
+
+Clicking any file opens a real diff in the editor: a commit's file against its
+parent, a branch summary file against the branch's base, and a working-tree file
+against `HEAD`. They are read-only views built from git's object database
+through a `restack:` URI, so nothing is written to disk to show you a diff, and
+a binary file opens as a single pane rather than two panes of mojibake.
+
+Counts and trees hang off *Current* only. The *Proposed* column describes a
+state that does not exist yet, and file counts for it would be a guess.
+
 ### Adding and removing branches
 
 Below the stack, **Available** lists the repo's other local branches — every
@@ -506,7 +539,11 @@ drag-and-type for `screenshot-init.png`, the harness's `?view=behind` scene for
 subject, `?view=multi` with the disclosure clicked open for
 `screenshot-switcher.png`, and `?view=github` for `screenshot-github.png`, whose
 three subjects sit far enough apart on the screen to need a taller frame than
-the rest. They cannot drift from the UI, because they *are* the UI.
+the rest. `screenshot-changes.png` uses `?view=changes` with two rows and one
+commit clicked open, and is the one wider frame — a file tree under a row asks
+the Current column for more room than 460px, and a clipped path is the one thing
+that screenshot must not show. They cannot drift from the UI, because they *are*
+the UI.
 
 ### Sandbox
 

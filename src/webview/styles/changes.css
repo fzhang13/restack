@@ -6,6 +6,19 @@
  * .row__ to keep it that way.
  */
 
+/*
+ * `.row` (graph.css) is a horizontal flex line, which is right up until a row
+ * has something *under* it. An expanded row has two children — the line, and
+ * the tree below it — so it has to stack them; left as a flex row the tree
+ * lays out beside the branch name and runs off the side of the panel.
+ *
+ * The rail keeps working: `.row::before` is absolutely positioned against the
+ * row, so it still spans the taller box, and the node sits inside `.row__line`.
+ */
+.row--expanded {
+  display: block;
+}
+
 .row__line {
   display: flex;
   align-items: center;
