@@ -99,9 +99,21 @@ export interface StatusGroups {
   untracked: string[];
 }
 
+/** HEAD's own commit, so the working tree can offer to amend it directly. */
+export interface HeadCommit {
+  sha: string;
+  shortSha: string;
+  subject: string;
+}
+
 export interface WorkingTree extends StatusGroups {
   /** Branch HEAD is on, absent when detached. */
   branch?: string;
+  /**
+   * The commit HEAD points at. Absent on an unborn branch — a repository with
+   * no commits has a working tree and nothing to amend into.
+   */
+  head?: HeadCommit;
 }
 
 /**
@@ -161,9 +173,27 @@ export interface StepExec {
  * `link` is remote, and runs last: it joins the pull requests submit just
  * opened into a stack on GitHub. See publishSteps in plan.ts for why submit
  * alone is not enough.
+ *
+ * The amend kinds — `stage`, `commit`, `ref`, `checkout`, `pick`,
+ * `autosquash` — are all local, which is what lets `drive()`'s remote check
+ * stay a membership test against `LOCAL_KINDS`. Only `pick` and `autosquash`
+ * can leave the repository mid-sequencer, so only those two are treated as
+ * recoverable failures; see `runStep`.
  */
 export interface PlanStep {
-  kind: 'rebase' | 'metadata' | 'push' | 'submit' | 'link' | 'trunk';
+  kind:
+    | 'rebase'
+    | 'metadata'
+    | 'push'
+    | 'submit'
+    | 'link'
+    | 'trunk'
+    | 'stage'
+    | 'commit'
+    | 'ref'
+    | 'checkout'
+    | 'pick'
+    | 'autosquash';
   /** Branch this step acts on, when applicable. */
   branch?: string;
   /** Human-readable shell command, ready to copy. */
@@ -209,6 +239,23 @@ export interface ApplyProgress {
   canUndo?: boolean;
 }
 
+/**
+ * What an amend plan is doing, carried on the Plan so the runner does not have
+ * to re-derive it by reading the steps back.
+ *
+ * `parked` is the field that matters: it says a commit was written to
+ * `refs/restack/parked` and that rolling back must cherry-pick it home again.
+ * A pure reword parks nothing — its commit is empty by construction, and
+ * `git cherry-pick` on an empty commit errors rather than restoring anything.
+ */
+export interface AmendMeta {
+  /** Branch holding the commit being folded into. */
+  targetBranch: string;
+  /** Full SHA of that commit, as it was before the amend ran. */
+  targetSha: string;
+  parked: boolean;
+}
+
 export interface Plan {
   steps: PlanStep[];
   /** Branch names in their proposed bottom-to-top order. */
@@ -224,6 +271,8 @@ export interface Plan {
   insertedBranches: string[];
   /** Branches leaving the stack, rebased back onto trunk. */
   removedBranches: string[];
+  /** Set only on an amend plan; absent on a reorder. See AmendMeta. */
+  amend?: AmendMeta;
 }
 
 /**
@@ -591,4 +640,31 @@ export type WebviewMessage =
    */
   | { type: 'openCommitFile'; sha: string; base?: string; path: string; oldPath?: string }
   /** Open an uncommitted file beside HEAD's version of it. */
-  | { type: 'openWorkingFile'; path: string };
+  | { type: 'openWorkingFile'; path: string }
+  /**
+   * Stage or unstage paths. An empty list means the whole tree — sent by the
+   * Stage all / Unstage all buttons, so the host does not have to be told the
+   * list the webview happens to be rendering.
+   */
+  | { type: 'stage'; paths: string[] }
+  | { type: 'unstage'; paths: string[] }
+  /** Commit what is staged, with `message`. Nothing else is swept in. */
+  | { type: 'commit'; message: string }
+  /**
+   * Fold what is staged into an existing commit, and replay the branches above
+   * it. `sha` and `subject` identify the target: the SHA is what `--fixup=`
+   * names, the subject is what an `amend!` reword matches on, and the webview
+   * has both from the commit row the button sits in.
+   *
+   * `reword: true` asks the host for a new message before building the plan.
+   * The message is not sent from here — the input box belongs beside the
+   * confirmation, and a webview that pre-filled it would have to hold the
+   * commit's full message just to offer to edit it.
+   */
+  | {
+      type: 'amend';
+      branch: string;
+      sha: string;
+      subject: string;
+      reword?: boolean;
+    };

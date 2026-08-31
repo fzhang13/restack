@@ -29,6 +29,7 @@ import { BaseButton, StackColumn } from '../components/StackColumn';
 import { StackSwitcher } from '../components/StackSwitcher';
 import { Toolbar } from '../components/Toolbar';
 import { Tray } from '../components/Tray';
+import { WorkingTreePanel } from '../components/WorkingTree';
 import type { HostState } from '../hooks/useHostState';
 import { EMPTY_PLAN, TRAY_ID } from '../lib/constants';
 import { toDisplayOrder, toModelOrder } from '../lib/order';
@@ -359,6 +360,8 @@ export function StackView({ stack, host }: { stack: Stack; host: HostState }) {
         busy={busy}
       />
 
+      <WorkingTreePanel workingTree={workingTree ?? null} busy={busy} />
+
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
@@ -424,7 +427,7 @@ export function StackView({ stack, host }: { stack: Stack; host: HostState }) {
                       branch={name}
                       changes={changes[name]}
                       changesEpoch={changesEpoch}
-                      workingTree={branch.isCurrent ? workingTree : null}
+                      hasStaged={(workingTree?.staged.length ?? 0) > 0}
                     />
                   )}
                 </li>

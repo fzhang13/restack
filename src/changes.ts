@@ -1,6 +1,13 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { BranchChanges, CommitSummary, FileChange, StatusGroups, WorkingTree } from './model.ts';
+import type {
+  BranchChanges,
+  CommitSummary,
+  FileChange,
+  HeadCommit,
+  StatusGroups,
+  WorkingTree,
+} from './model.ts';
 
 /**
  * Reading what a branch changed: its commits, their files, and the working
@@ -161,6 +168,21 @@ export function parseStatus(raw: string): StatusGroups {
   }
 
   return groups;
+}
+
+/**
+ * Parse `git log -1 --format=%H%x1f%h%x1f%s`.
+ *
+ * Returns undefined for the unborn-branch case, where the command fails and
+ * `plumbing` hands back an empty string. A repository with no commits has a
+ * working tree and nothing to amend into, and that is not an error.
+ */
+export function parseHeadCommit(raw: string): HeadCommit | undefined {
+  const [sha, shortSha, subject] = raw.trim().split('\x1f');
+  if (!sha || !shortSha) {
+    return undefined;
+  }
+  return { sha, shortSha, subject: subject ?? '' };
 }
 
 const execFileAsync = promisify(execFile);
@@ -348,11 +370,18 @@ export class ChangesReader {
 
   /** Never cached: it is the one thing here that changes without a ref moving. */
   async workingTree(cwd: string): Promise<WorkingTree> {
-    const [status, head] = await Promise.all([
+    const [status, head, commit] = await Promise.all([
       this.run(cwd, ['status', '--porcelain=v1', '-z']),
       this.run(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD']),
+      // One call rather than three rev-parses. `%x1f` for the same reason
+      // COMMIT_FORMAT uses it: a subject can hold a tab, never a 0x1f.
+      this.run(cwd, ['log', '-1', '--format=%H%x1f%h%x1f%s']),
     ]);
     const branch = head.trim();
-    return { ...parseStatus(status), branch: branch.length > 0 ? branch : undefined };
+    return {
+      ...parseStatus(status),
+      branch: branch.length > 0 ? branch : undefined,
+      head: parseHeadCommit(commit),
+    };
   }
 }

@@ -19,3 +19,4 @@
 @import './styles/init.css'; /* .message, .empty, .init*, .badge--new */
 @import './styles/switcher.css'; /* .stacks*, .switcher*, .badge--pr-base */
 @import './styles/changes.css'; /* .change*, .row__line, .row__twisty, .badge--commits */
+@import './styles/worktree.css'; /* .wt*, .change__action, .change__file, .commit__actions */

@@ -1,0 +1,164 @@
+/*
+ * The pinned working-tree section.
+ *
+ * Imported last, after changes.css, so `.change__action` — declared here and
+ * used by rows that changes.css otherwise owns — can be overridden by anything
+ * in this file without a specificity fight. Everything else is scoped under
+ * `.wt` for the same reason the changes rules are scoped under `.change`:
+ * styles.css's cascade order is load-bearing for the badge and trunk rules, and
+ * nothing here may disturb it.
+ */
+.wt {
+  margin: 0 0 12px;
+  padding: 8px;
+  border: 1px solid var(--vscode-widget-border, transparent);
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background);
+}
+
+.wt__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.wt__title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--vscode-descriptionForeground);
+}
+
+.wt__branch {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 11px;
+  color: var(--vscode-foreground);
+}
+
+.wt__spacer {
+  flex: 1;
+}
+
+.wt__link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--vscode-textLink-foreground);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.wt__link:disabled {
+  color: var(--vscode-disabledForeground);
+  cursor: default;
+}
+
+.wt__group {
+  margin-top: 4px;
+}
+
+.wt__heading {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--vscode-descriptionForeground);
+}
+
+.wt__files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wt__message {
+  width: 100%;
+  margin-top: 8px;
+  padding: 4px 6px;
+  box-sizing: border-box;
+  border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, transparent));
+  border-radius: 2px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  resize: vertical;
+}
+
+.wt__actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.wt__commit,
+.wt__amend {
+  flex: 1;
+}
+
+/*
+ * A file row with an action holds two children, not one. Applied to every
+ * `.change__file` rather than only those: with a single child the row renders
+ * identically either way, and a modifier class would have to be threaded
+ * through FileRow's one call site that does not use it.
+ */
+.change__file {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* Right-aligned, and only as wide as its glyph — the file path takes the rest. */
+.change__action {
+  flex: none;
+  width: 20px;
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background: none;
+  color: var(--vscode-icon-foreground, var(--vscode-foreground));
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.7;
+}
+
+.change__action:hover:not(:disabled) {
+  background: var(--vscode-toolbar-hoverBackground);
+  opacity: 1;
+}
+
+.change__action:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/*
+ * A commit row is now three children — the header button, the amend/reword
+ * pair, and the file list that opens under them. Wrapping puts the first two on
+ * one line and gives the list a line of its own, without a wrapper element that
+ * would exist only to be a flex container.
+ */
+.change__commit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+}
+
+.change__commit > .change__commit-button {
+  flex: 1 1 auto;
+  width: auto;
+}
+
+.change__commit > .change__files {
+  flex: 1 0 100%;
+}
+
+.commit__actions {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}

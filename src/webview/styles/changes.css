@@ -26,20 +26,28 @@
   min-width: 0;
 }
 
+/*
+ * Sized and coloured like a tree twisty in the SCM view rather than like body
+ * text. At 10px in descriptionForeground it read as a speck beside the graph
+ * dots and people did not find it — the tree was shipped and invisible.
+ */
 .row__twisty {
   flex: none;
   width: 16px;
   padding: 0;
   border: none;
   background: none;
-  color: var(--vscode-descriptionForeground);
+  color: var(--vscode-icon-foreground, var(--vscode-foreground));
   cursor: pointer;
-  font-size: 10px;
+  font-size: 13px;
   line-height: 1;
+  opacity: 0.75;
 }
 
-.row__twisty:hover {
+.row__twisty:hover,
+.row:hover .row__twisty {
   color: var(--vscode-foreground);
+  opacity: 1;
 }
 
 .badge--commits {
