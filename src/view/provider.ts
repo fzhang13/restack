@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { readStack } from '../stack';
 import { readBranchCandidates } from '../candidates';
 import { computePlan } from '../plan';
-import { readRemoteState } from '../remote';
+import { autoFetchInterval, readRemoteState } from '../remote';
 import { ApplyRunner, hasOrigin, type PersistedSession } from '../apply';
 import { ChangesReader, readTips } from '../changes';
 import { detectTrunk } from '../init';
@@ -21,8 +21,9 @@ import type {
   WebviewMessage,
   WorkingTree,
 } from '../model';
+import { FolderSelection, type FolderChoice } from './folder';
 import { git, resolves } from './git';
-import type { Host } from './host';
+import type { Host, RefreshOptions } from './host';
 import { webviewHtml } from './html';
 import { pickBase, pickBranch, pickStack } from './picks';
 import { updateStatus } from './status';
@@ -41,8 +42,9 @@ import { openFile, openMergeEditor, openUrl } from './operations/files';
 import { handleInitStack } from './operations/init';
 import { handleRebaseStack } from './operations/rebase';
 import { handleRemoveStack } from './operations/remove';
+import { reportHeldStash, restoreStash } from './operations/stash';
 import { GH_CLI_URL, handleInstallGhStack, openGhPathSetting } from './operations/setup';
-import { fetch as fetchRemoteState, handleSyncStack } from './operations/sync';
+import { autoFetch, fetch as fetchRemoteState, handleSyncStack } from './operations/sync';
 
 /** workspaceState key holding an apply session across a window reload. */
 const SESSION_KEY = 'restack.session';
@@ -103,6 +105,16 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
   private readonly status: vscode.StatusBarItem;
   /** Watches `.git/index`; alive only while a conflict is paused. See watchIndex. */
   private indexWatcher?: vscode.Disposable;
+  /**
+   * The `restack.autoFetch` timer, or undefined when off. See watchAutoFetch.
+   *
+   * One field for the whole provider rather than one per call, so a second
+   * resolveWebviewView — the view being closed and reopened — re-arms the
+   * existing timer instead of leaving two of them running.
+   */
+  private autoFetchTimer?: ReturnType<typeof setInterval>;
+  /** Which workspace folder is being read. Trivial in single-root; see folder.ts. */
+  private readonly folders: FolderSelection;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -111,6 +123,7 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
   ) {
     this.log = log;
     this.status = status;
+    this.folders = new FolderSelection(context.workspaceState);
     this.runner = new ApplyRunner(
       (progress) => {
         this.post({ type: 'apply', progress });
@@ -122,6 +135,10 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
       {
         persist: (state) => void this.context.workspaceState.update(SESSION_KEY, state),
         log: (line) => this.log.appendLine(line),
+        // apply.ts stays free of `vscode`, so the half of restoring a stash
+        // that talks to the user is handed in from here. See stash.ts.
+        restoreStash: (cwd, sha) => restoreStash(cwd, this, sha),
+        reportStash: (cwd, sha) => reportHeldStash(cwd, this, sha),
       },
     );
   }
@@ -223,6 +240,53 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
       watcher.onDidCreate(bump),
       vscode.workspace.onDidSaveTextDocument(bump),
       new vscode.Disposable(() => timer && clearTimeout(timer)),
+    );
+  }
+
+  /**
+   * Fetch on a timer, if the user has turned that on.
+   *
+   * Off unless `restack.autoFetch` says otherwise, which is the whole reason
+   * this is safe to add: Restack's claim is that the Fetch button is the only
+   * git network call, and a default of 0 keeps that true for anyone who does
+   * not go looking. `restack.autoFetch` the *command* is how they find it.
+   *
+   * Three things stop the timer firing, and the visibility one does the most
+   * work: a collapsed sidebar has nobody to render for, so an editor left open
+   * overnight with the view closed makes no network calls at all. The other two
+   * — an apply owning the repository, and no remote — are checked inside
+   * autoFetch, next to the rest of what it refuses to do.
+   */
+  private watchAutoFetch(view: vscode.WebviewView): vscode.Disposable {
+    const stop = () => {
+      if (this.autoFetchTimer) {
+        clearInterval(this.autoFetchTimer);
+        this.autoFetchTimer = undefined;
+      }
+    };
+
+    const arm = () => {
+      stop();
+      const seconds = autoFetchInterval(
+        vscode.workspace.getConfiguration('restack').get<number>('autoFetch', 0),
+      );
+      if (seconds === 0 || !view.visible) {
+        return;
+      }
+      this.autoFetchTimer = setInterval(() => void autoFetch(this), seconds * 1000);
+    };
+
+    arm();
+    return vscode.Disposable.from(
+      // Re-armed rather than paused: coming back to a hidden view should wait a
+      // full interval before reaching the network, not fire the moment it opens.
+      view.onDidChangeVisibility(arm),
+      vscode.workspace.onDidChangeConfiguration((event) => {
+        if (event.affectsConfiguration('restack.autoFetch')) {
+          arm();
+        }
+      }),
+      new vscode.Disposable(stop),
     );
   }
 
@@ -353,7 +417,7 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
           });
           break;
         case 'applyDismiss':
-          this.runner.dismiss();
+          void this.guard(() => this.runner.dismiss());
           this.post({ type: 'applyCleared' });
           break;
         case 'openUrl':
@@ -386,6 +450,9 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
         case 'newStack':
           void handleNewStack(this);
           break;
+        case 'selectFolder':
+          void this.selectFolder(message.index);
+          break;
         case 'installGhStack':
           void handleInstallGhStack(this);
           break;
@@ -409,6 +476,7 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
     });
     this.context.subscriptions.push(watcher);
     this.context.subscriptions.push(this.watchWorkingTree());
+    this.context.subscriptions.push(this.watchAutoFetch(view));
   }
 
   post(message: HostMessage): void {
@@ -551,7 +619,89 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
   }
 
   cwd(): string | undefined {
-    return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    return this.folders.current()?.uri.fsPath;
+  }
+
+  /** Every open workspace folder, for the picker and for the view's list. */
+  folderOptions(): FolderChoice[] {
+    return this.folders.options();
+  }
+
+  /**
+   * Read a different workspace folder from now on.
+   *
+   * Refused mid-apply, and not merely for tidiness: the session holds a cwd, a
+   * branch snapshot, and possibly a stash sha, all belonging to one repository.
+   * Switching out from under it would strand every one of them.
+   */
+  async selectFolder(index: number): Promise<void> {
+    if (this.runner.active) {
+      void vscode.window.showWarningMessage(
+        'Restack: an apply is in progress. Finish or abort it before switching folders.',
+      );
+      return;
+    }
+    if (!(await this.folders.select(index))) {
+      return;
+    }
+    this.forgetRepository();
+    await this.refresh();
+  }
+
+  /**
+   * Ask which folder, from the command palette or the view's ⋯ menu.
+   *
+   * The list is worth showing even when the answer is already settled — it is
+   * the only place a multi-root user can see which of their folders Restack
+   * has picked, and change it.
+   */
+  async pickFolder(): Promise<void> {
+    const choices = this.folders.options();
+    if (choices.length < 2) {
+      void vscode.window.showInformationMessage(
+        'Restack: this workspace has only one folder to read.',
+      );
+      return;
+    }
+
+    const currentPath = this.cwd();
+    const picked = await vscode.window.showQuickPick(
+      choices.map((choice, index) => ({
+        label: choice.name,
+        description: choice.path === currentPath ? 'current' : undefined,
+        detail: choice.path,
+        index,
+      })),
+      { title: 'Restack: read which folder?', placeHolder: 'Pick the repository to read' },
+    );
+    if (picked) {
+      await this.selectFolder(picked.index);
+    }
+  }
+
+  /**
+   * Drop everything cached about the repository being left behind.
+   *
+   * Every `lastX` field describes one repository, and refresh() overwrites most
+   * of them — but not all, and a half-overwritten view is worse than an empty
+   * one. The GitHub graph in particular is keyed by branch name, so carrying it
+   * across would put another repository's PR badges on identically named rows.
+   */
+  private forgetRepository(): void {
+    this.lastStack = undefined;
+    this.lastPlan = undefined;
+    this.lastOrder = undefined;
+    this.lastCandidates = [];
+    this.lastRemote = undefined;
+    this.lastStacks = [];
+    this.lastRemoteStacks = [];
+    this.lastTips = new Map();
+    this.lastCounts = {};
+    this.lastWorkingTree = undefined;
+    this.github = emptyGraph();
+    // So the deferred first read runs again, against the folder now in view.
+    this.githubLoaded = false;
+    this.changesReader.clear();
   }
 
   ghPath(): string {
@@ -654,13 +804,26 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
     return vscode.workspace.getConfiguration('restack').get<boolean>('readRemoteStacks', true);
   }
 
-  async refresh(): Promise<void> {
-    const folder = vscode.workspace.workspaceFolders?.[0];
+  async refresh(options?: RefreshOptions): Promise<void> {
+    // Before anything reads cwd(): in a multi-root workspace this is what
+    // decides which folder that is, and it may have to probe for it.
+    await this.folders.resolve();
+    const folder = this.folders.current();
     if (!folder) {
+      const choices = this.folders.options();
       updateStatus(this.status, undefined, this.lastStacks);
       this.post({
         type: 'stack',
-        result: { kind: 'error', message: 'Open a folder to read its stack.' },
+        result:
+          choices.length === 0
+            ? { kind: 'error', message: 'Open a folder to read its stack.' }
+            : {
+                kind: 'pick-folder',
+                message:
+                  'This workspace has several folders, and more than one of them — or none ' +
+                  'of them — holds a stack. Pick the repository to read.',
+                folders: choices,
+              },
         candidates: [],
         canPublish: false,
         stacks: [],
@@ -670,7 +833,9 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
       return;
     }
 
-    this.post({ type: 'loading' });
+    if (!options?.quiet) {
+      this.post({ type: 'loading' });
+    }
     const cwd = folder.uri.fsPath;
     let result: StackResult = await readStack(cwd, this.ghPath());
     this.lastStack = result.kind === 'ok' ? result.stack : undefined;

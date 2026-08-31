@@ -32,6 +32,11 @@ package-lock.json
 CLAUDE.md
 docs/**
 
+# Agent working notes. Untracked, so a CI build from a fresh checkout never
+# sees them — but `vsce package` walks the working tree, so a local package run
+# would otherwise bundle every one. The v0.5.1 failure mode exactly.
+.superpowers/**
+
 # Production builds emit no sourcemaps, but esbuild does not clean the
 # directory, so stale ones from a dev build would otherwise be picked up.
 **/*.map

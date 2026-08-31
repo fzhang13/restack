@@ -10,7 +10,8 @@ import type { RemoteState, Stack, Tracking } from './model.ts';
  * the branch config — so `refresh()` can call `readRemoteState` on every
  * `.git/HEAD` change without touching the network. That split is the whole
  * design: the counts shown in the view are free and instant, and the network
- * is only reached when the user presses Fetch or Sync.
+ * is only reached when the user presses Fetch or Sync — or on the
+ * `restack.autoFetch` timer, which is off unless they turn it on.
  *
  * Like candidates.ts, nothing here rejects. A repository with no remote, or one
  * git cannot enumerate, yields empty state rather than an error — the view then
@@ -144,6 +145,31 @@ export async function fetchRemote(cwd: string, remote: string): Promise<string |
     result.stderr.trim().split('\n').find((l) => l.trim())?.trim() ||
     `git fetch --prune ${remote} failed.`
   );
+}
+
+/**
+ * The floor on `restack.autoFetch`, in seconds.
+ *
+ * The setting is a free-form number box, so a mistyped `5` would otherwise put
+ * a network call in front of the user twelve times a minute. Sixty is low
+ * enough that nobody who wants frequent fetches feels constrained, and high
+ * enough that a typo cannot become a loop.
+ */
+export const MIN_AUTO_FETCH_SECONDS = 60;
+
+/**
+ * Read the `restack.autoFetch` setting into an interval, or 0 for off.
+ *
+ * Anything that is not a positive finite number reads as off, which covers the
+ * default and every way a hand-edited settings.json can go wrong — a string, a
+ * negative, a NaN. Off is the safe interpretation: the alternative to a
+ * background fetch is the Fetch button, which still works.
+ */
+export function autoFetchInterval(raw: unknown): number {
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) {
+    return 0;
+  }
+  return Math.max(Math.round(raw), MIN_AUTO_FETCH_SECONDS);
 }
 
 /**

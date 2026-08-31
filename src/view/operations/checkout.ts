@@ -5,6 +5,7 @@ import { topBranchOf } from '../../stacks';
 import { checkout } from '../git';
 import { blockedByApply, type Host } from '../host';
 import { confirmCheckoutRemoteStack, confirmNewStack } from '../prompts';
+import { offerStash, restoreStash } from './stash';
 
 /** Check a branch out, refusing anything that could lose work. */
 export async function handleCheckout(host: Host, branch: string): Promise<void> {
@@ -26,10 +27,23 @@ export async function handleCheckout(host: Host, branch: string): Promise<void> 
       return;
     }
 
+    // Before the checkout, so a yes makes the tree clean and the dirty-tree
+    // refusal inside checkout() never fires. A no falls through to it.
+    const stash = await offerStash(cwd, host, `Checking out ${branch}`);
+
     const result = await checkout(cwd, branch);
     if (result) {
       void vscode.window.showErrorMessage(`Restack: ${result}`);
+      // The checkout is the only thing between the push and the pop, so a
+      // failure means the tree is exactly as the stash left it. Put it back
+      // rather than leaving the user to discover the stash themselves.
+      if (stash) {
+        await restoreStash(cwd, host, stash);
+      }
       return;
+    }
+    if (stash) {
+      await restoreStash(cwd, host, stash);
     }
     await host.refresh();
   });

@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, rmSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ApplyRunner } from '../src/apply.ts';
 import { computePlan } from '../src/plan.ts';
 import type { ApplyProgress } from '../src/model.ts';
 import type { PersistedSession } from '../src/apply.ts';
+import { stashPush, stashRestore } from '../src/stash.ts';
 import { collect, git, makeRepo, readStackFrom } from './support/repo.ts';
 
 /**
@@ -33,7 +34,7 @@ test('a paused session can be replayed to a reconnecting webview', async (t) => 
   assert.equal(runner.current?.phase, 'conflict');
   assert.deepEqual(runner.currentPlan, plan);
 
-  runner.dismiss();
+  await runner.dismiss();
   assert.equal(runner.active, false);
   assert.equal(runner.current, undefined);
   assert.equal(runner.currentPlan, undefined);
@@ -94,7 +95,7 @@ test('persistence is cleared when the session ends', async (t) => {
   await runner.start(cwd, 'gh', stack, computePlan(stack, next), next, 'local');
   assert.ok(saved, 'a finished-but-undoable session stays persisted');
 
-  runner.dismiss();
+  await runner.dismiss();
   // Otherwise the next window would restore a session that is already over and
   // reject every later apply as "already in progress".
   assert.equal(saved, undefined);
@@ -163,4 +164,157 @@ test('aborting a publish-only session touches nothing', async (t) => {
   assert.equal(readFileSync(join(cwd, '.git', 'gh-stack'), 'utf8'), before);
   assert.equal(git(cwd, 'rev-parse', 'feat/ui'), uiBefore);
   assert.equal(runner.active, false);
+});
+
+/**
+ * The stash an apply is handed, as a thing with the same lifetime as the
+ * session that owns it. The hazard these pin down is ordering: a stash popped
+ * while the panel is still offering Roll back would be sitting in the working
+ * tree when abort() reaches its snapshot through `git checkout --force`.
+ */
+function stashingRunner(): {
+  runner: ApplyRunner;
+  states: ApplyProgress[];
+  restored: string[];
+  reported: string[];
+} {
+  const states: ApplyProgress[] = [];
+  const restored: string[] = [];
+  const reported: string[] = [];
+  const runner = new ApplyRunner((p) => states.push(p), {
+    restoreStash: async (cwd, sha) => {
+      restored.push(sha);
+      await stashRestore(cwd, sha);
+    },
+    reportStash: async (_cwd, sha) => {
+      reported.push(sha);
+    },
+  });
+  return { runner, states, restored, reported };
+}
+
+async function stashDirty(cwd: string): Promise<string> {
+  writeFileSync(join(cwd, 'README.md'), 'uncommitted\n');
+  const pushed = await stashPush(cwd, 'restack: test apply');
+  assert.equal(pushed.kind, 'stashed');
+  return pushed.kind === 'stashed' ? pushed.sha : '';
+}
+
+test('a stash is held, not popped, while a finished apply can still be rolled back', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const stack = readStackFrom(cwd);
+  const next = ['feat/api', 'feat/ui', 'feat/auth'];
+  const sha = await stashDirty(cwd);
+
+  const { runner, states, restored } = stashingRunner();
+  await runner.start(cwd, 'gh', stack, computePlan(stack, next), next, 'local', sha);
+
+  // Roll back is still on offer, and it gets there via `git checkout --force`.
+  // Anything popped now would be destroyed by pressing it.
+  assert.deepEqual(restored, []);
+  assert.equal(readFileSync(join(cwd, 'README.md'), 'utf8'), 'base\n');
+  assert.match(states.at(-1)!.message ?? '', /still stashed/);
+});
+
+test('dismissing a finished apply gives the stash back', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const stack = readStackFrom(cwd);
+  const next = ['feat/api', 'feat/ui', 'feat/auth'];
+  const sha = await stashDirty(cwd);
+
+  const { runner, restored } = stashingRunner();
+  await runner.start(cwd, 'gh', stack, computePlan(stack, next), next, 'local', sha);
+  await runner.dismiss();
+
+  assert.deepEqual(restored, [sha]);
+  assert.equal(readFileSync(join(cwd, 'README.md'), 'utf8'), 'uncommitted\n');
+  assert.equal(git(cwd, 'stash', 'list'), '');
+});
+
+test('rolling back gives the stash back, after the branches are restored', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const stack = readStackFrom(cwd);
+  const next = ['feat/api', 'feat/ui', 'feat/auth'];
+  const authBefore = git(cwd, 'rev-parse', 'feat/auth');
+  const sha = await stashDirty(cwd);
+
+  const { runner, restored } = stashingRunner();
+  await runner.start(cwd, 'gh', stack, computePlan(stack, next), next, 'local', sha);
+  await runner.abort();
+
+  assert.equal(git(cwd, 'rev-parse', 'feat/auth'), authBefore);
+  assert.deepEqual(restored, [sha]);
+  // The pop lands after `git checkout --force`, not before it.
+  assert.equal(readFileSync(join(cwd, 'README.md'), 'utf8'), 'uncommitted\n');
+});
+
+test('a stash is settled once, even when finish and abort both run', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const stack = readStackFrom(cwd);
+  const next = ['feat/api', 'feat/ui', 'feat/auth'];
+  const sha = await stashDirty(cwd);
+
+  const { runner, restored } = stashingRunner();
+  await runner.start(cwd, 'gh', stack, computePlan(stack, next), next, 'local', sha);
+  await runner.abort();
+  // The session is over, but a second settle would pop whatever now sits in
+  // the slot the entry used to occupy.
+  await runner.dismiss().catch(() => {});
+
+  assert.deepEqual(restored, [sha]);
+});
+
+test('dismissing mid-conflict leaves the stash alone and says where it is', async (t) => {
+  const cwd = makeRepo({ sharedFile: true });
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const stack = readStackFrom(cwd);
+  const next = ['feat/ui', 'feat/auth', 'feat/api'];
+  writeFileSync(join(cwd, 'README.md'), 'uncommitted\n');
+  const pushed = await stashPush(cwd, 'restack: test apply');
+  const sha = pushed.kind === 'stashed' ? pushed.sha : '';
+
+  const { runner, restored, reported } = stashingRunner();
+  await runner.start(cwd, 'gh', stack, computePlan(stack, next), next, 'local', sha);
+  assert.equal(runner.current?.phase, 'conflict');
+
+  await runner.dismiss();
+
+  // A tree with unmerged paths cannot take a pop, so the entry stays and the
+  // user is told where it is rather than being handed a second conflict.
+  assert.deepEqual(restored, []);
+  assert.deepEqual(reported, [sha]);
+  assert.match(git(cwd, 'stash', 'list'), /restack: test apply/);
+});
+
+test('the stash sha survives the reload a conflict can outlast', async (t) => {
+  const cwd = makeRepo({ sharedFile: true });
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const stack = readStackFrom(cwd);
+  const next = ['feat/ui', 'feat/auth', 'feat/api'];
+  const sha = await stashDirty(cwd);
+
+  let saved: PersistedSession | undefined;
+  const first = new ApplyRunner(() => {}, { persist: (s) => { saved = s; } });
+  await first.start(cwd, 'gh', stack, computePlan(stack, next), next, 'local', sha);
+  assert.equal(first.current?.phase, 'conflict');
+
+  const wire = JSON.parse(JSON.stringify(saved)) as PersistedSession;
+  assert.equal(wire.stash, sha, 'a reload mid-conflict must not orphan the stash');
+
+  const { runner, restored } = stashingRunner();
+  runner.restore(wire);
+  await runner.abort();
+
+  assert.deepEqual(restored, [sha]);
+  assert.equal(readFileSync(join(cwd, 'README.md'), 'utf8'), 'uncommitted\n');
 });

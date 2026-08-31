@@ -10,4 +10,9 @@ sandbox/
 sandbox-conflict/
 sandbox-multi
 test/harness/driver.js
+
+# Agent working notes, not source. Untracked either way, but naming them here
+# keeps them out of `git status` — and out of the .vsix, since anything left in
+# the working tree is fair game for `vsce package`. See .vscodeignore.
 docs/superpowers/
+.superpowers/
