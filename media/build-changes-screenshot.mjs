@@ -28,12 +28,16 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
-// Tall, because the subject is what unfolds below a row rather than the row
-// itself: two expansions plus the trunk and the toolbar above them. The
-// Proposed column is in frame and deliberately so — the counts and the trees
-// hang off Current only, and the empty column beside them is what says so.
-const WIDTH = 460;
-const HEIGHT = 700;
+// Wider and shorter than the others, for one reason each. Wider because a file
+// tree under a row makes the Current column ask for more room than the 460px
+// the rest of these use, and a clipped path is the one thing this screenshot
+// must not show. Shorter because the subject ends at the trunk: the tray and
+// the plan below it are already screenshot.png's.
+//
+// The Proposed column stays in frame deliberately — counts and trees hang off
+// Current only, and the plain column beside them is what says so.
+const WIDTH = 560;
+const HEIGHT = 478;
 
 const work = mkdtempSync(join(tmpdir(), 'restack-shot-changes-'));
 
@@ -46,18 +50,28 @@ const html = readFileSync(join(root, 'test', 'harness', 'index.html'), 'utf8')
 // Click the twisties through their own handlers, and give the `loadChanges`
 // round trip a beat to answer before the capture — an expansion that has not
 // been answered yet reads "Reading…", which is a screenshot of a spinner.
+//
+// Then open one commit, in a second pass: the commits only exist once the
+// branch has been answered, and a commit opened is the only way to show the
+// second level, which is the files that one commit touched rather than the
+// branch's whole summary above it.
 const script = `
 <script>
-  addEventListener('load', () => setTimeout(() => {
-    for (const branch of ['feat/api', 'feat/ui']) {
-      const twisty = document.querySelector(\`[aria-label="Show changes in \${branch}"]\`);
-      if (!twisty) continue;
-      twisty.click();
-      // The focus ring is an artifact of driving this by script; a reader would
-      // have clicked, and the ring reads as a selected state that is not one.
-      twisty.blur();
-    }
-  }, 300));
+  const open = (el) => {
+    if (!el) return;
+    el.click();
+    // The focus ring is an artifact of driving this by script; a reader would
+    // have clicked, and the ring reads as a selected state that is not one.
+    el.blur();
+  };
+  addEventListener('load', () => {
+    setTimeout(() => {
+      for (const branch of ['feat/api', 'feat/ui']) {
+        open(document.querySelector(\`[aria-label="Show changes in \${branch}"]\`));
+      }
+    }, 300);
+    setTimeout(() => open(document.querySelector('.change__commit-button')), 900);
+  });
 </script>`;
 
 writeFileSync(join(work, 'shot.html'), html.replace('</body>', `${script}</body>`));

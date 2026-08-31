@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.7.0
+
+### Added
+
+- **Branches in the Current column now open, and show what is inside them.**
+  Reordering a stack is a decision about content — whether this branch's changes
+  really do sit under that one — and until now the panel showed only names.
+  Answering "what is actually in `feat/api`?" meant leaving the view for a
+  terminal or the Source Control panel, and coming back to a decision you had
+  lost the context for.
+
+  Every branch row now carries a commit count and a twisty. Opening one shows:
+
+  - **The working tree**, on the branch you are standing on and only there —
+    staged, unstaged, and untracked, in the three groups git reports them in. It
+    is live: saving a file or staging a hunk updates it without a refresh.
+    Untracked files are listed but not clickable; there is no committed side to
+    put beside them.
+  - **The branch's own files** — everything that differs between its base and
+    its tip, so a rename is one entry showing both paths rather than a delete
+    and an add.
+  - **Its commits**, newest first, each of which opens in turn to the files that
+    one commit touched.
+
+  Clicking any file opens a real VS Code diff. The left-hand side comes from a
+  read-only `restack:` document backed by the git object, so nothing on disk is
+  touched and the editor cannot write back to a commit — and a file git calls
+  binary opens as a single pane instead of a diff of bytes. A file listed under
+  the branch is diffed across the whole base-to-tip range; a file listed under a
+  commit is diffed against that commit's parent, so both answer the question
+  they were clicked under.
+
+  Counts and trees hang off *Current* only. The Proposed column stays a plain
+  list of names, because it describes an order that does not exist yet.
+
 ## 0.6.1
 
 ### Fixed
