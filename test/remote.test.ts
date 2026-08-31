@@ -5,6 +5,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  MIN_AUTO_FETCH_SECONDS,
+  autoFetchInterval,
   branchesBehind,
   ensureBaseBranch,
   detectRemote,
@@ -399,4 +401,36 @@ test('ensureBaseBranch reports a remote ref that is not there', async (t) => {
   // than letting `gh stack init` record a trunk that does not resolve.
   assert.equal(result.kind, 'failed');
   assert.match(result.kind === 'failed' ? result.message : '', /nope/);
+});
+
+/**
+ * The one part of background fetch that can be tested here. The timer and the
+ * visibility gating live in provider.ts, which needs a `vscode` module this
+ * runner has no way to supply — those are verified by hand in the sandboxes.
+ */
+test('autoFetchInterval reads the default as off', () => {
+  assert.equal(autoFetchInterval(0), 0);
+  assert.equal(autoFetchInterval(undefined), 0);
+});
+
+test('autoFetchInterval floors a too-eager interval instead of honouring it', () => {
+  // The mistyped-`5` case: a free-form number box should not be able to
+  // produce twelve network calls a minute.
+  assert.equal(autoFetchInterval(5), MIN_AUTO_FETCH_SECONDS);
+  assert.equal(autoFetchInterval(59), MIN_AUTO_FETCH_SECONDS);
+  assert.equal(autoFetchInterval(60), 60);
+  assert.equal(autoFetchInterval(180), 180);
+});
+
+test('autoFetchInterval reads a nonsense setting as off rather than guessing', () => {
+  // settings.json is hand-editable, so none of these are hypothetical.
+  assert.equal(autoFetchInterval(-1), 0);
+  assert.equal(autoFetchInterval(Number.NaN), 0);
+  assert.equal(autoFetchInterval(Number.POSITIVE_INFINITY), 0);
+  assert.equal(autoFetchInterval('180'), 0);
+  assert.equal(autoFetchInterval(null), 0);
+});
+
+test('autoFetchInterval rounds a fractional interval to whole seconds', () => {
+  assert.equal(autoFetchInterval(180.6), 181);
 });
