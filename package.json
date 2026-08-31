@@ -85,6 +85,10 @@
         "icon": "$(cloud-download)"
       },
       {
+        "command": "restack.autoFetch",
+        "title": "Restack: Background Fetch…"
+      },
+      {
         "command": "restack.syncStack",
         "title": "Restack: Sync Stack with Remote"
       },
@@ -111,6 +115,10 @@
         "title": "Restack: New Stack"
       },
       {
+        "command": "restack.selectFolder",
+        "title": "Restack: Select Folder…"
+      },
+      {
         "command": "restack.installGhStack",
         "title": "Restack: Install gh-stack"
       },
@@ -130,6 +138,10 @@
           "command": "restack.fetch",
           "when": "view == restack.stackView",
           "group": "navigation@2"
+        },
+        {
+          "command": "restack.autoFetch",
+          "when": "view == restack.stackView"
         },
         {
           "command": "restack.refresh",
@@ -158,6 +170,10 @@
           "when": "view == restack.stackView"
         },
         {
+          "command": "restack.selectFolder",
+          "when": "view == restack.stackView && workspaceFolderCount > 1"
+        },
+        {
           "command": "restack.showLog",
           "when": "view == restack.stackView"
         }
@@ -176,6 +192,12 @@
           "type": "boolean",
           "default": true,
           "description": "Ask GitHub about stacks that exist on the remote — a colleague's, or your own from another machine — and about pull requests added to your stack on the server. One authenticated GraphQL call through the gh CLI, made once when the view first loads and again whenever you press Fetch. Turn this off to keep Restack entirely local except for the buttons that say otherwise."
+        },
+        "restack.autoFetch": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "Fetch from the remote automatically, every N seconds. `0` disables it — the default, so Restack makes no network call you did not ask for. Values below 60 are treated as 60. Pauses while the Restack view is hidden and while an apply is running, and never shows a spinner or an error popup: failures go to the Restack output channel. Also settable from the **Background Fetch…** item in the Restack view's ⋯ menu."
         }
       }
     }

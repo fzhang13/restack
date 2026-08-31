@@ -22,6 +22,17 @@ import type {
  * getters — several operations deliberately re-read `stack` after an
  * `await refresh()`.
  */
+export interface RefreshOptions {
+  /**
+   * Skip the `loading` post that opens a refresh.
+   *
+   * For refreshes the user did not ask for: background fetch runs on a timer,
+   * and without this the view would flash its loading state every interval.
+   * Everything else about the refresh is unchanged.
+   */
+  quiet?: boolean;
+}
+
 export interface Host {
   readonly log: vscode.OutputChannel;
   readonly runner: ApplyRunner;
@@ -39,7 +50,7 @@ export interface Host {
   ghPath(): string;
   post(message: HostMessage): void;
   guard(action: () => Promise<void>): Promise<void>;
-  refresh(): Promise<void>;
+  refresh(options?: RefreshOptions): Promise<void>;
   loadGithub(cwd: string): Promise<void>;
   /** Record the plan the panel renders from, before a run starts. */
   publishPlan(plan: Plan, order: string[]): void;
