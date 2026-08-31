@@ -93,6 +93,13 @@ export async function handleAmend(
 
   await host.guard(async () => {
     await host.runner.start(cwd, host.ghPath(), stack, plan, order, 'local');
+    // A conflict pauses the plan rather than ending it, and start() resolves
+    // either way — see ApplyRunner.paused. Neither of the steps below is right
+    // yet: there is nothing to publish, and a refresh would read the stack with
+    // HEAD detached mid-rebase and post the error over the conflict panel.
+    if (host.runner.paused) {
+      return;
+    }
     if (scope === 'publish') {
       await handlePublish(host);
     }

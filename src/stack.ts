@@ -29,6 +29,72 @@ interface ExecError extends Error {
 }
 
 /**
+ * Map one failed `gh stack view` onto the screen it should produce.
+ *
+ * Split out of readStack and kept pure so the tests can cover it: they never
+ * shell out to `gh`, and the exit codes and wordings matched here are the most
+ * drift-prone thing in the extension — gh-stack is v0.1.0.
+ */
+export function classifyStackFailure(
+  /**
+   * Spelled out rather than `Pick<ExecError, …>`: `message` is required on
+   * Error, and every field here is optional at a real call site.
+   */
+  failure: { code?: number | string; message?: string; stdout?: string; stderr?: string },
+  ghPath = 'gh',
+): StackResult {
+  if (failure.code === 'ENOENT') {
+    return {
+      kind: 'gh-missing',
+      message: `Could not run "${ghPath}". Install the GitHub CLI, or set restack.ghPath.`,
+    };
+  }
+
+  const stderr = cleanMessage(failure.stderr ?? '');
+  const combined = `${stderr} ${cleanMessage(failure.stdout ?? '')}`.toLowerCase();
+
+  // gh exits 1 with `unknown command "stack" for "gh"` on stderr. Its own
+  // kind rather than gh-missing: gh is here and working, and the fix is one
+  // command Restack can offer to run — see operations/setup.ts.
+  if (combined.includes('unknown command') || combined.includes('not a gh command')) {
+    return {
+      kind: 'stack-missing',
+      message: 'The gh CLI is installed, but the gh-stack extension is not.',
+    };
+  }
+
+  if (failure.code === EXIT_NOT_APPLICABLE) {
+    if (combined.includes('not a git repository')) {
+      return { kind: 'not-a-repo', message: stderr || 'Not a git repository.' };
+    }
+    if (combined.includes('not part of a stack')) {
+      return { kind: 'no-stack', message: stderr || 'This branch is not part of a stack.' };
+    }
+  }
+
+  // Matched on the message as well as the code, since an exit code alone is
+  // a thin thing to hang a screen on across gh-stack versions.
+  if (failure.code === EXIT_AMBIGUOUS || combined.includes('belongs to multiple stacks')) {
+    return {
+      kind: 'no-stack',
+      message: stderr || 'This branch belongs to more than one stack. Choose one below.',
+    };
+  }
+
+  // Verified against gh-stack v0.1.0: a detached HEAD exits 2 with
+  // `failed to get current branch: failed to run git: not on any branch`. Not
+  // matched on the code, which it shares with two unrelated cases above, and
+  // not on the outer wrapping, which is gh-stack's to reword. Its own kind
+  // because a stopped rebase leaves the repository exactly here, and the
+  // generic error screen would replace the panel holding Continue and Abort.
+  if (combined.includes('not on any branch') || combined.includes('head is detached')) {
+    return { kind: 'detached-head', message: stderr || 'HEAD is not on any branch.' };
+  }
+
+  return { kind: 'error', message: stderr || failure.message || 'Failed to read stack.' };
+}
+
+/**
  * Run `gh stack view --json` in `cwd` and map every failure mode onto a
  * StackResult the UI can render. Never rejects.
  */
@@ -43,47 +109,7 @@ export async function readStack(cwd: string, ghPath = 'gh'): Promise<StackResult
     });
     stdout = result.stdout;
   } catch (err) {
-    const e = err as ExecError;
-
-    if (e.code === 'ENOENT') {
-      return {
-        kind: 'gh-missing',
-        message: `Could not run "${ghPath}". Install the GitHub CLI, or set restack.ghPath.`,
-      };
-    }
-
-    const stderr = cleanMessage(e.stderr ?? '');
-    const combined = `${stderr} ${cleanMessage(e.stdout ?? '')}`.toLowerCase();
-
-    // gh exits 1 with `unknown command "stack" for "gh"` on stderr. Its own
-    // kind rather than gh-missing: gh is here and working, and the fix is one
-    // command Restack can offer to run — see operations/setup.ts.
-    if (combined.includes('unknown command') || combined.includes('not a gh command')) {
-      return {
-        kind: 'stack-missing',
-        message: 'The gh CLI is installed, but the gh-stack extension is not.',
-      };
-    }
-
-    if (e.code === EXIT_NOT_APPLICABLE) {
-      if (combined.includes('not a git repository')) {
-        return { kind: 'not-a-repo', message: stderr || 'Not a git repository.' };
-      }
-      if (combined.includes('not part of a stack')) {
-        return { kind: 'no-stack', message: stderr || 'This branch is not part of a stack.' };
-      }
-    }
-
-    // Matched on the message as well as the code, since an exit code alone is
-    // a thin thing to hang a screen on across gh-stack versions.
-    if (e.code === EXIT_AMBIGUOUS || combined.includes('belongs to multiple stacks')) {
-      return {
-        kind: 'no-stack',
-        message: stderr || 'This branch belongs to more than one stack. Choose one below.',
-      };
-    }
-
-    return { kind: 'error', message: stderr || e.message || 'Failed to read stack.' };
+    return classifyStackFailure(err as ExecError, ghPath);
   }
 
   try {

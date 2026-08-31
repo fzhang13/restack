@@ -440,6 +440,23 @@ export class ApplyRunner {
     return this.session !== undefined;
   }
 
+  /**
+   * Stopped on a conflict, waiting for the user — not finished.
+   *
+   * `start()` resolves either way: a conflict returns from drive() exactly as a
+   * clean finish does, and only the phase tells them apart. Callers need this
+   * before they carry on to publish and refresh, because neither is right yet.
+   * Refreshing in particular reads the stack while a rebase holds HEAD detached,
+   * which gh-stack cannot do — the resulting error screen lands on top of the
+   * conflict panel and takes Continue and Abort with it.
+   *
+   * `active` is the wrong question: the session deliberately outlives a
+   * *successful* local apply so the panel can still offer Push & submit and Undo.
+   */
+  get paused(): boolean {
+    return this.session?.lastProgress?.phase === 'conflict';
+  }
+
   /** Progress to replay to a webview that reconnected mid-apply. */
   get current(): ApplyProgress | undefined {
     return this.session?.lastProgress;

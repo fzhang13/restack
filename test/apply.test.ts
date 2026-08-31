@@ -104,6 +104,49 @@ test('a conflicting rebase pauses instead of unwinding', async (t) => {
   assert.ok(final.message?.includes('Resolve'));
 });
 
+/**
+ * `start()` resolving does not mean the plan is over.
+ *
+ * A conflict returns from drive() the same way a clean finish does, so the
+ * callers in view/operations need a way to tell them apart before they carry on
+ * to publish and refresh. Refreshing here reads the stack with HEAD detached
+ * mid-rebase, which gh-stack cannot do — the error screen it produced landed on
+ * top of the conflict panel and took Continue and Abort with it.
+ */
+test('paused reports a conflict that start() returned from', async (t) => {
+  const cwd = makeRepo({ sharedFile: true });
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const stack = readStackFrom(cwd);
+  const next = ['feat/ui', 'feat/auth', 'feat/api'];
+
+  const { runner } = collect();
+  assert.equal(runner.paused, false, 'nothing has run yet');
+
+  await runner.start(cwd, 'gh', stack, computePlan(stack, next), next, 'local');
+  assert.equal(runner.paused, true, 'start() returned, but the rebase is still open');
+
+  await runner.abort();
+  assert.equal(runner.paused, false, 'the session is gone');
+});
+
+test('paused stays false through a clean apply, which does want its refresh', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+
+  const stack = readStackFrom(cwd);
+  const next = ['feat/ui', 'feat/auth', 'feat/api'];
+
+  const { runner } = collect();
+  await runner.start(cwd, 'gh', stack, computePlan(stack, next), next, 'local');
+
+  // The session deliberately outlives a successful local apply so the panel can
+  // offer Push & submit, Undo, and Dismiss — so `active` is the wrong question
+  // to ask here, and `paused` is the right one.
+  assert.equal(runner.active, true);
+  assert.equal(runner.paused, false);
+});
+
 test('abort restores every branch and the metadata byte for byte', async (t) => {
   const cwd = makeRepo({ sharedFile: true });
   t.after(() => rmSync(cwd, { recursive: true, force: true }));

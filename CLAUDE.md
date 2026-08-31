@@ -80,6 +80,19 @@ Continue, and Undo the reorder path has. `abort()` restores `refs/restack/parked
 for exactly that reason — the `checkout --force` would otherwise erase the change
 that had just been folded in.
 
+`runner.start()` **resolves on a conflict as well as on a clean finish** — a
+pause returns from `drive()` the same way success does. Callers must check
+`runner.paused` before carrying on: publishing is not possible yet, and a
+`refresh()` there reads the stack with HEAD detached mid-rebase, which
+`gh stack view` cannot do. That posts a `detached-head` result over the paused
+apply, and the panel it replaces is the one holding Continue and Abort.
+`runner.active` is the wrong test — the session deliberately outlives a
+*successful* local apply so Push & submit and Undo stay on screen.
+`App.tsx` gives `detached-head` its own gate (`views/RebaseView.tsx`) rather than
+the generic error screen, so a window reloaded mid-conflict still renders the
+plan panel; the provider fills in `sequencer` because only the host can tell a
+stopped rebase from a plain detached checkout.
+
 `webview/styles.css` is ten `@import`s, cut on line boundaries rather than by
 concern. `.badge--new`, `.badge--pr-base`, and `.trunk--current` depend on their
 position in the cascade — reordering the imports changes rendering.
@@ -90,7 +103,7 @@ position in the cascade — reordering the imports changes rendering.
 
 ```bash
 npm run typecheck     # tsc --noEmit; esbuild does not typecheck
-npm test              # node --test, 213 tests, real git in temp repos
+npm test              # node --test, 250 tests, real git in temp repos
 npm run build         # or `watch`
 npm run package       # -> restack-<version>.vsix (runs prepublish first)
 npx vsce ls --tree    # exactly what would ship
@@ -104,7 +117,7 @@ never to `gh`, so they run anywhere git exists.
 `test/harness/index.html` renders the webview in a plain browser with no
 extension host. `?view=` reaches states a single fixture can't be in at once:
 `init`, `outside`, `drift`, `trunk`, `away`, `multi`, `github`, `conflict`,
-`setup`, `no-gh`, `changes`, `folder`, `amend`.
+`setup`, `no-gh`, `changes`, `folder`, `amend`, `rebase`, `detached`.
 Rebuild it with `node test/harness/build-driver.mjs` — it bundles the real
 `plan.ts`, so the page computes plans with the same code the extension runs.
 

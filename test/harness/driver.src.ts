@@ -107,6 +107,9 @@ const harnessCounts: Record<string, number> = { 'feat/auth': 1, 'feat/api': 2, '
  *   ?view=away    HEAD on a branch gh-stack does not list at all
  *   ?view=amend   like ?view=changes; expand a row for the amend/reword buttons
  *   ?view=conflict a paused rebase, for the conflict panel
+ *   ?view=rebase  the same pause, but with HEAD detached so the stack cannot be
+ *                 read at all — the panel has to survive without it
+ *   ?view=detached HEAD off a branch with no rebase behind it
  *   ?view=behind  the trunk moved under the stack — the sync banner
  *   ?view=diverged a stack branch is behind its upstream — the blocking banner
  *   ?view=remote-base a stack based on a colleague's branch, not on main
@@ -290,6 +293,33 @@ function sendStack() {
       },
       '*',
     );
+    return;
+  }
+
+  // A rebase stopped on a conflict: HEAD is detached, so gh-stack cannot name a
+  // branch and there is no stack to render. The scene worth checking is what
+  // follows the message — the paused apply's panel, which is the only way back
+  // out and which this state used to hide behind a generic error screen.
+  if (view === 'rebase' || view === 'detached') {
+    window.postMessage(
+      {
+        type: 'stack',
+        result: {
+          kind: 'detached-head',
+          message: 'failed to get current branch: failed to run git: not on any branch',
+          sequencer: view === 'rebase',
+        },
+        candidates: [],
+        canPublish: false,
+        stacks: [],
+        remoteStacks: [],
+        commitCounts: {},
+      },
+      '*',
+    );
+    if (view === 'rebase') {
+      sendConflict(['shared.txt', 'src/one.ts']);
+    }
     return;
   }
 

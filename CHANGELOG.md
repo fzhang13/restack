@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.9.1
+
+### Fixed
+
+- **An amend that hits a conflict no longer hides the buttons for resolving it.**
+  0.9.0 shipped the amend path, and the conflict half of it was unreachable in
+  the one case that matters. Amending a commit whose replay conflicts left the
+  panel showing **Could not read stack — failed to get current branch: failed to
+  run git: not on any branch**, with a Retry button that could not succeed. The
+  plan, the list of unmerged files, and Continue and Undo were all gone. The only
+  way out was `git rebase --continue` or `--abort` in a terminal, and taking the
+  second of those by hand skipped the step that returns the folded-in change to
+  your working tree.
+
+  Three things lined up to cause it. A conflict *pauses* a plan rather than
+  ending it, but the run returns to its caller either way; the caller could not
+  tell the two apart, so it carried on to the refresh it does after a successful
+  amend. That refresh reads the stack — and a stopped rebase leaves HEAD detached,
+  which `gh stack view` cannot read at all. Its error was then rendered as a dead
+  end, on top of the panel that had the buttons.
+
+  All three are now addressed. The refresh is skipped while a plan is paused, so
+  the conflict panel stays put; a detached HEAD is recognized as its own state
+  rather than a generic failure; and that state renders the paused plan beneath
+  it, so Continue and Undo survive even a window reload mid-conflict. The same
+  fix covers a reorder that conflicts, which took the same route.
+
+  A reorder or amend confirmed as **& Publish** no longer asks about publishing
+  when the local half stopped at a conflict — it asked, then refused, because
+  there was nothing landed to publish yet.
+
+- **Being off a branch is now explained rather than reported as a failure.**
+  Checking out a tag or a bare commit put the same "could not read stack" error
+  in the panel. Restack now says HEAD is not on a branch, and distinguishes a
+  rebase or cherry-pick in progress — where the advice is to resolve and continue
+  — from a plain detached checkout, where it is to check a branch out again.
+
 ## 0.9.0
 
 ### Added
