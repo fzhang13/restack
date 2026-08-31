@@ -411,6 +411,12 @@ export type StackResult =
    * Restack can offer to run; see operations/setup.ts.
    */
   | { kind: 'stack-missing'; message: string }
+  /**
+   * Several folders are open and Restack cannot tell which one is meant.
+   * Not an error: a multi-root workspace where more than one folder holds a
+   * stack — or none does — has no right answer to guess at, so the view asks.
+   */
+  | { kind: 'pick-folder'; message: string; folders: { name: string; path: string }[] }
   | { kind: 'error'; message: string };
 
 /** Messages: extension host -> webview. */
@@ -489,6 +495,12 @@ export type WebviewMessage =
    * candidate tray.
    */
   | { type: 'pickBase' }
+  /**
+   * Read this workspace folder from now on, by index into the `folders` list of
+   * a `pick-folder` result. An index rather than a path so the webview never
+   * has to hold, or be trusted with, a filesystem location.
+   */
+  | { type: 'selectFolder'; index: number }
   /**
    * Extend the stack by one branch, on top: `gh stack add <branch>`. Created if
    * it does not exist, adopted if it does — gh-stack decides, and an adopted

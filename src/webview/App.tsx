@@ -1,6 +1,7 @@
 import type { Stack } from '../model';
 import { Message } from './components/primitives';
 import { useHostState } from './hooks/useHostState';
+import { FolderView } from './views/FolderView';
 import { InitView } from './views/InitView';
 import { SetupView } from './views/SetupView';
 import { StackView } from './views/StackView';
@@ -36,6 +37,12 @@ export function App() {
         candidates={candidates}
       />
     );
+  }
+
+  // Before the setup gates: with no folder settled there is no repository to
+  // have asked `gh` about, so those states cannot be reached from here anyway.
+  if (result?.kind === 'pick-folder') {
+    return <FolderView message={result.message} folders={result.folders} />;
   }
 
   // Neither is an error in the stack — they are Restack not being set up yet,
