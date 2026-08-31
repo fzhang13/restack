@@ -111,6 +111,7 @@ const harnessCounts: Record<string, number> = { 'feat/auth': 1, 'feat/api': 2, '
  *   ?view=setup   gh is installed, gh-stack is not — the install screen
  *   ?view=no-gh   no gh CLI at all, the one Restack cannot fix for you
  *   ?view=changes the stack view with counts and an expanded branch's contents
+ *   ?view=folder  a multi-root workspace with no obvious repository to read
  */
 const view = new URLSearchParams(location.search).get('view') ?? '';
 
@@ -257,6 +258,35 @@ function remoteFor(trunk: string): RemoteState | undefined {
 }
 
 function sendStack() {
+  // A multi-root workspace Restack cannot resolve on its own. Ahead of the
+  // setup states below for the same reason App.tsx puts it there: with no
+  // folder settled, nothing has asked gh anything yet.
+  if (view === 'folder') {
+    window.postMessage(
+      {
+        type: 'stack',
+        result: {
+          kind: 'pick-folder',
+          message:
+            'This workspace has several folders, and more than one of them — or none of ' +
+            'them — holds a stack. Pick the repository to read.',
+          folders: [
+            { name: 'restack', path: '/Users/you/code/restack' },
+            { name: 'gh-stack', path: '/Users/you/code/gh-stack' },
+            { name: 'notes', path: '/Users/you/Documents/notes' },
+          ],
+        },
+        candidates: [],
+        canPublish: false,
+        stacks: [],
+        remoteStacks: [],
+        commitCounts: {},
+      },
+      '*',
+    );
+    return;
+  }
+
   // Restack not set up yet. Neither carries a stack, candidates, or anything
   // else — that is the point: these are the states where nothing could be read.
   if (view === 'setup' || view === 'no-gh') {
