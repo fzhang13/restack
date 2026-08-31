@@ -59,16 +59,23 @@ export async function checkout(cwd: string, branch: string): Promise<string | un
 }
 
 /**
- * Resolve a workspace-relative path, refusing anything that escapes the
+ * Resolve a repository-relative path, refusing anything that escapes the
  * folder. The path comes from `git diff` in this workspace, but it arrives
  * over a message channel, so it is re-checked rather than trusted.
+ *
+ * `root` is passed in rather than looked up: in a multi-root workspace the
+ * folder Restack is reading is a choice held by the provider, and resolving
+ * against the wrong one would either miss the file or — worse — find a
+ * same-named file in a different repository. See folder.ts.
  */
-export function resolveInWorkspace(relative: string): vscode.Uri | undefined {
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  if (!folder) {
+export function resolveInWorkspace(
+  root: string | undefined,
+  relative: string,
+): vscode.Uri | undefined {
+  if (!root) {
     return undefined;
   }
-  const target = vscode.Uri.joinPath(folder.uri, relative);
-  const root = folder.uri.fsPath.replace(/\/*$/, '/');
-  return target.fsPath.startsWith(root) ? target : undefined;
+  const target = vscode.Uri.joinPath(vscode.Uri.file(root), relative);
+  const prefix = root.replace(/\/*$/, '/');
+  return target.fsPath.startsWith(prefix) ? target : undefined;
 }

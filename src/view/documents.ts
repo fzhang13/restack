@@ -110,7 +110,7 @@ export async function openCommitDiff(
  * to keep working on it.
  */
 export async function openWorkingDiff(host: Host, path: string): Promise<void> {
-  const target = resolveInWorkspace(path);
+  const target = resolveInWorkspace(host.cwd(), path);
   if (!target) {
     return;
   }

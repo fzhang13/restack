@@ -49,6 +49,18 @@ interface Session {
   /** Cleared once anything has been pushed — undo cannot reach the remote. */
   canUndo: boolean;
   /**
+   * Commit sha of a stash taken to clear the tree before this apply, if any.
+   *
+   * Held for the whole session rather than popped after the first rebase: a
+   * conflict pauses the plan for as long as the user needs, and a stash popped
+   * into a half-rebased tree is exactly the mess the dirty-tree refusal exists
+   * to prevent. It is a sha and not `stash@{0}` because the user has a
+   * terminal — see stash.ts.
+   */
+  stash?: string;
+  /** Set once the stash has been dealt with, so no path pops it twice. */
+  stashSettled?: boolean;
+  /**
    * The last progress emitted. A webview that reloads mid-apply comes back with
    * no idea a session is running, so it has to be told again — otherwise the
    * panel that owns Continue / Abort / Dismiss never renders and the session
@@ -77,6 +89,9 @@ export interface PersistedSession {
   scope: ApplyScope;
   localComplete: boolean;
   canUndo: boolean;
+  /** See Session.stash. Persisted so a window reload cannot orphan it. */
+  stash?: string;
+  stashSettled?: boolean;
   lastProgress?: ApplyProgress;
 }
 
@@ -96,6 +111,8 @@ function serialize(session: Session): PersistedSession {
     scope: session.scope,
     localComplete: session.localComplete,
     canUndo: session.canUndo,
+    stash: session.stash,
+    stashSettled: session.stashSettled,
     lastProgress: session.lastProgress,
   };
 }
@@ -240,6 +257,20 @@ export interface RunnerOptions {
   persist?: (state: PersistedSession | undefined) => void;
   /** Full command log: file, argv, exit code, and both output streams. */
   log?: (line: string) => void;
+  /**
+   * Put back the stash taken before this apply, and tell the user how it went.
+   *
+   * A callback for the same reason `persist` is one: restoring is a git
+   * operation this module could do itself, but reporting a conflicted pop is a
+   * notification, and notifications are `vscode`. Absent in tests, where the
+   * assertion is that the sha reached the terminal path at all.
+   */
+  restoreStash?: (cwd: string, sha: string) => Promise<void>;
+  /**
+   * Say where a stash was left, for the one path that deliberately keeps it.
+   * See dismiss().
+   */
+  reportStash?: (cwd: string, sha: string) => Promise<void>;
 }
 
 export class ApplyRunner {
@@ -282,6 +313,8 @@ export class ApplyRunner {
     plan: Plan,
     order: string[],
     scope: ApplyScope,
+    /** Sha of a stash the caller took to clear the tree. See Session.stash. */
+    stash?: string,
   ): Promise<void> {
     if (this.session) {
       throw new ApplyError(
@@ -323,6 +356,7 @@ export class ApplyRunner {
       scope,
       localComplete: false,
       canUndo: true,
+      stash,
     };
 
     await this.drive();
@@ -486,6 +520,8 @@ export class ApplyRunner {
       scope: state.scope,
       localComplete: state.localComplete,
       canUndo: state.canUndo,
+      stash: state.stash,
+      stashSettled: state.stashSettled,
       lastProgress: state.lastProgress,
     };
   }
@@ -518,6 +554,10 @@ export class ApplyRunner {
       await run('git', ['checkout', '--force', '--quiet', snapshot.branch], cwd);
     }
 
+    // Every branch is back at its pre-apply sha and HEAD is home, so the tree
+    // is in the state the stash was taken from — the cleanest pop there is.
+    await this.settleStash(session);
+
     // `canUndo: false` because the rollback just happened and the session is
     // about to be cleared. Left true, the panel offers Roll back a second time
     // for a session that no longer exists, and the click reports "No apply in
@@ -540,9 +580,42 @@ export class ApplyRunner {
     await this.drive();
   }
 
-  /** Drop the session without touching the repository. */
-  dismiss(): void {
+  /**
+   * Drop the session. Touches the repository only to give a stash back.
+   *
+   * Dismiss after a successful local apply is the ordinary way to end, and the
+   * user's stashed work has to come back with it. The exception is a session
+   * dismissed while a rebase is still open — walking away from a conflict
+   * rather than resolving it — where the tree cannot take a pop at all. There
+   * the stash stays put and reportStash says where it is.
+   */
+  async dismiss(): Promise<void> {
+    const session = this.session;
+    if (session?.stash && !session.stashSettled) {
+      if (await rebaseInProgress(session.cwd)) {
+        session.stashSettled = true;
+        await this.options.reportStash?.(session.cwd, session.stash);
+      } else {
+        await this.settleStash(session);
+      }
+    }
     this.clear();
+  }
+
+  /**
+   * Give a stash back, once and only once across a session's life.
+   *
+   * The flag matters because the terminal paths are not mutually exclusive: a
+   * local apply finishes, the panel stays open, and Roll back is still there
+   * to be pressed. Without it the second path would pop a stash that is no
+   * longer in the list, or worse, one the user has since reused the slot for.
+   */
+  private async settleStash(session: Session): Promise<void> {
+    if (!session.stash || session.stashSettled) {
+      return;
+    }
+    session.stashSettled = true;
+    await this.options.restoreStash?.(session.cwd, session.stash);
   }
 
   /** End the session and drop the persisted copy along with it. */
@@ -707,6 +780,7 @@ export class ApplyRunner {
       await run('git', ['checkout', '--quiet', session.snapshot.branch], session.cwd);
     }
 
+
     const published = session.statuses.some(
       (s, i) => s === 'done' && session.plan.steps[i].kind === 'submit',
     );
@@ -717,11 +791,23 @@ export class ApplyRunner {
       }
     }
 
+    // Only when the session is actually over. A local apply leaves the panel
+    // open with Roll back still live, and abort() reaches its snapshot through
+    // `git checkout --force` — which discards uncommitted work. Popping here
+    // would put the user's changes directly in front of that, so the stash
+    // waits for whichever of publish, roll back, or dismiss comes first.
+    if (published) {
+      await this.settleStash(session);
+    }
+
+    const held = session.stash && !session.stashSettled;
     this.publishProgress({
       phase: 'done',
-      message: published
-        ? 'Stack reordered and published.'
-        : 'Reorder applied locally. Nothing has been pushed.',
+      message:
+        (published
+          ? 'Stack reordered and published.'
+          : 'Reorder applied locally. Nothing has been pushed.') +
+        (held ? ' Your changes are still stashed — publish, roll back, or dismiss to get them back.' : ''),
     });
 
     if (published) {

@@ -1,5 +1,90 @@
 # Changelog
 
+## 0.8.0
+
+### Added
+
+- **A dirty working tree is now an offer rather than only a refusal.** Every
+  operation that moves HEAD needs a clean tree, and Restack's answer was a
+  message ending "commit or stash them first" — the two commands spelled out
+  for you to go and run somewhere else, then come back and start again. The
+  second of those is now a button.
+
+  Check out a branch, add or remove one, initialize a stack, apply a reorder,
+  rebase, sync, or change the base with uncommitted changes, and Restack names
+  the files and offers **Stash and continue**. It runs `git stash push` before
+  the operation and `git stash pop` after it. Decline, and you get exactly the
+  refusal you got before — nothing changes unless you say yes.
+
+  Two details are deliberate. **Untracked files are left alone** (no `-u`),
+  which matches every dirty check in Restack, all of which pass
+  `--untracked-files=no` — so a stash never carries off a file the refusal was
+  not about. And **the stash is identified by commit SHA, never `stash@{0}`**:
+  the stash is a stack and you have a terminal, so pushing another one while a
+  reorder runs must not make Restack pop the wrong entry.
+
+  For an apply the stash is held for the whole session rather than popped the
+  moment the rebases land. A finished local apply still offers **Roll back**,
+  which reaches its snapshot through `git checkout --force` — restoring your
+  changes in front of that would put them exactly where that command destroys
+  them. So the stash comes back on whichever of publish, roll back, or dismiss
+  happens first, the panel says so while it waits, and it survives a window
+  reload along with the rest of the session. Dismissing an apply paused on a
+  conflict is the one case where nothing is popped, because the tree cannot
+  take it; you are told the `stash@{N}` to pop yourself. Same for a pop that
+  conflicts — nothing is dropped until you drop it.
+
+- **Optional background fetch, off by default.** Everything Restack shows about
+  the remote — the ahead/behind pills, the sync banner, the clobber warning —
+  is read from local refs, so it is only ever as fresh as your last fetch. The
+  Fetch button makes it fresh, but only if you remember to press it, and a
+  stale banner is worse than no banner.
+
+  `restack.autoFetch` is a number of seconds; `0` is the default and means off,
+  so Restack still makes no network call you did not ask for. Values below 60
+  are treated as 60, because the setting is a free-form number box and a
+  mistyped `5` should not put a network call in front of you twelve times a
+  minute.
+
+  The timer is deliberately quieter than the button. It pauses while the
+  Restack view is hidden — an editor left open overnight with the sidebar
+  collapsed makes no network calls at all — and while an apply is running. It
+  never shows a spinner, because a spinner would claim you asked for this, and
+  never shows an error popup, because a laptop off the network would raise one
+  every interval until it reconnected. Failures go to the **Restack** output
+  channel instead.
+
+  **Restack: Background Fetch…** in the view's ⋯ menu turns it on and off with
+  presets, which is how you find a setting that defaults to off.
+
+- **Multi-root workspaces read the right folder.** Restack read
+  `workspaceFolders[0]` — whichever folder happened to be added first, which is
+  routinely the docs or the config and not the repository with the stack in it.
+
+  It now resolves in the cheapest order that can be right: one folder answers
+  itself, then a choice you have already made in this workspace, then a check of
+  each folder for a `.git/gh-stack` — a local file read, no `gh` and no network
+  — which picks the folder automatically when exactly one has stacks. Only a
+  genuine ambiguity, several folders with stacks or none at all, puts a list on
+  screen and asks. Your answer is remembered.
+
+  A single-root window is unchanged and pays nothing: no probe, no stored value,
+  no question. **Restack: Select Folder…** shows the list again with the current
+  folder marked, and appears in the view's ⋯ menu when there is more than one
+  folder. Switching is refused while an apply is in flight — the session holds a
+  working directory, a branch snapshot, and possibly a stash, all belonging to
+  one repository — and switching clears everything cached about the folder being
+  left, so no PR badge or commit count crosses over.
+
+### Changed
+
+- **Typecheck and tests now run on every push to `main` and every pull
+  request.** Nothing ran between releases: the checks lived in the tag-triggered
+  release workflow, so a type error or a broken test was found at the moment it
+  was least welcome. The new workflow builds and ships nothing — packaging still
+  belongs to the release — and pins the same Node 22 the release job uses, so CI
+  cannot pass on a version that would fail there.
+
 ## 0.7.0
 
 ### Added

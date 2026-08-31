@@ -333,6 +333,19 @@ export class ChangesReader {
     }
   }
 
+  /**
+   * Forget everything, for a change of repository rather than of branch.
+   *
+   * `prune` keeps what is still in the stack, which is the wrong question when
+   * the whole folder has changed underneath. The keys carry SHAs, so a stale
+   * entry could not be *returned* for another repository — but it would sit
+   * there for the life of the window, and nothing would ever prune it.
+   */
+  clear(): void {
+    this.branches.clear();
+    this.counts.clear();
+  }
+
   /** Never cached: it is the one thing here that changes without a ref moving. */
   async workingTree(cwd: string): Promise<WorkingTree> {
     const [status, head] = await Promise.all([
