@@ -21,6 +21,7 @@ import { AddBranch } from '../components/AddBranch';
 import { PrBaseBadge, TrackingBadge } from '../components/badges';
 import { Banners } from '../components/Banners';
 import { BranchRow } from '../components/BranchRow';
+import { ChangeTree } from '../components/ChangeTree';
 import { PlanView } from '../components/PlanView';
 import { CheckoutButton, Node, PrTag } from '../components/primitives';
 import { RemoteStackList } from '../components/RemoteStacks';
@@ -58,9 +59,31 @@ export function StackView({ stack, host }: { stack: Stack; host: HostState }) {
     remote,
     stacks,
     remoteStacks,
+    changes,
+    changesEpoch,
+    commitCounts,
+    workingTree,
   } = host;
 
   const [dragging, setDragging] = useState<string | null>(null);
+
+  /** Branches whose change tree is open. Collapsed is the default: the tree is
+      a read of the repository, and most of the time the order is the question. */
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  const toggleExpanded = useCallback((name: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) {
+        next.delete(name);
+      } else {
+        // No request from here: mounting ChangeTree posts it, and asking in
+        // both places would post twice for every expand.
+        next.add(name);
+      }
+      return next;
+    });
+  }, []);
 
   const sensors = useSensors(
     // A small activation distance keeps clicks from registering as drags.
@@ -357,19 +380,53 @@ export function StackView({ stack, host }: { stack: Stack; host: HostState }) {
             {currentDisplay.map((name, i) => {
               const branch = byName.get(name);
               return branch ? (
-                <li key={name} className={`row row--static ${branch.isCurrent ? 'row--current' : ''}`}>
-                  <Node index={i} isHead={branch.isCurrent} />
-                  <span className="name">{branch.name}</span>
-                  {branch.prNumber && <PrTag branch={branch} />}
-                  {branch.isCurrent && <span className="badge badge--HEAD">HEAD</span>}
-                  {/* Only on this column: the proposed one describes a future
-                      state, and these counts are about the present. */}
-                  <TrackingBadge tracking={trackingByName.get(name)} />
-                  <PrBaseBadge
-                    pr={activePrs[name]}
-                    expected={expectedBaseByName.get(name) ?? stack.trunk}
-                  />
-                  {!branch.isCurrent && <CheckoutButton branch={name} disabled={busy} />}
+                <li
+                  key={name}
+                  className={`row row--static ${branch.isCurrent ? 'row--current' : ''} ${
+                    expanded.has(name) ? 'row--expanded' : ''
+                  }`}
+                >
+                  <div className="row__line">
+                    <button
+                      type="button"
+                      className="row__twisty"
+                      aria-expanded={expanded.has(name)}
+                      aria-label={`${expanded.has(name) ? 'Hide' : 'Show'} changes in ${name}`}
+                      onClick={() => toggleExpanded(name)}
+                    >
+                      {expanded.has(name) ? '▾' : '▸'}
+                    </button>
+                    <Node index={i} isHead={branch.isCurrent} />
+                    <span className="name">{branch.name}</span>
+                    {branch.prNumber && <PrTag branch={branch} />}
+                    {commitCounts[name] !== undefined && (
+                      <span
+                        className="badge badge--commits"
+                        title={`${commitCounts[name]} commit${
+                          commitCounts[name] === 1 ? '' : 's'
+                        } of its own`}
+                      >
+                        {commitCounts[name]}
+                      </span>
+                    )}
+                    {branch.isCurrent && <span className="badge badge--HEAD">HEAD</span>}
+                    {/* Only on this column: the proposed one describes a future
+                        state, and these counts are about the present. */}
+                    <TrackingBadge tracking={trackingByName.get(name)} />
+                    <PrBaseBadge
+                      pr={activePrs[name]}
+                      expected={expectedBaseByName.get(name) ?? stack.trunk}
+                    />
+                    {!branch.isCurrent && <CheckoutButton branch={name} disabled={busy} />}
+                  </div>
+                  {expanded.has(name) && (
+                    <ChangeTree
+                      branch={name}
+                      changes={changes[name]}
+                      changesEpoch={changesEpoch}
+                      workingTree={branch.isCurrent ? workingTree : null}
+                    />
+                  )}
                 </li>
               ) : null;
             })}

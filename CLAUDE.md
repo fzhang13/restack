@@ -82,7 +82,7 @@ never to `gh`, so they run anywhere git exists.
 `test/harness/index.html` renders the webview in a plain browser with no
 extension host. `?view=` reaches states a single fixture can't be in at once:
 `init`, `outside`, `drift`, `trunk`, `away`, `multi`, `github`, `conflict`,
-`setup`, `no-gh`.
+`setup`, `no-gh`, `changes`.
 Rebuild it with `node test/harness/build-driver.mjs` — it bundles the real
 `plan.ts`, so the page computes plans with the same code the extension runs.
 
