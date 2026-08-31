@@ -3,7 +3,12 @@ import { readStack } from '../stack';
 import { readBranchCandidates } from '../candidates';
 import { computePlan } from '../plan';
 import { autoFetchInterval, readRemoteState } from '../remote';
-import { ApplyRunner, hasOrigin, type PersistedSession } from '../apply';
+import {
+  ApplyRunner,
+  hasOrigin,
+  sequencerInProgress,
+  type PersistedSession,
+} from '../apply';
 import { ChangesReader, readTips } from '../changes';
 import { detectTrunk } from '../init';
 import { emptyGraph, readGithubGraph } from '../github';
@@ -852,6 +857,13 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
     }
     const cwd = folder.uri.fsPath;
     let result: StackResult = await readStack(cwd, this.ghPath());
+    // gh-stack can say HEAD is on no branch; only this side can say why. A
+    // stopped rebase and a plain detached checkout read identically to it, and
+    // they want opposite advice — resolve and continue, versus check something
+    // out. One `existsSync` pair, on a path that already runs several git reads.
+    if (result.kind === 'detached-head') {
+      result = { ...result, sequencer: await sequencerInProgress(cwd) };
+    }
     this.lastStack = result.kind === 'ok' ? result.stack : undefined;
     // Local ref reads only — no network — so this is safe on the .git/HEAD
     // watcher path, which fires on every checkout and every rebase step.

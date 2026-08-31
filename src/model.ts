@@ -466,6 +466,16 @@ export type StackResult =
    * stack — or none does — has no right answer to guess at, so the view asks.
    */
   | { kind: 'pick-folder'; message: string; folders: { name: string; path: string }[] }
+  /**
+   * HEAD is not on a branch, so gh-stack has nothing to look a stack up by.
+   *
+   * Almost always a rebase or cherry-pick that stopped on a conflict — which is
+   * exactly where an apply pauses, so the view must not treat it as a dead end:
+   * the plan panel underneath it is what has the Continue and Abort buttons.
+   * `sequencer` says which of the two it is, filled in by the host, which is the
+   * only side that can look at `.git`.
+   */
+  | { kind: 'detached-head'; message: string; sequencer?: boolean }
   | { kind: 'error'; message: string };
 
 /** Messages: extension host -> webview. */
