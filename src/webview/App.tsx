@@ -3,6 +3,7 @@ import { Message } from './components/primitives';
 import { useHostState } from './hooks/useHostState';
 import { FolderView } from './views/FolderView';
 import { InitView } from './views/InitView';
+import { RebaseView } from './views/RebaseView';
 import { SetupView } from './views/SetupView';
 import { StackView } from './views/StackView';
 import { vscodeApi } from './vscode';
@@ -50,6 +51,14 @@ export function App() {
   // which has only a Retry button to offer.
   if (result?.kind === 'gh-missing' || result?.kind === 'stack-missing') {
     return <SetupView kind={result.kind} message={result.message} />;
+  }
+
+  // Deliberately its own gate rather than falling into the one below: this is
+  // where a conflicted rebase parks the repository, and the generic screen has
+  // only Retry — which cannot succeed until the rebase is over, and which would
+  // be sitting on top of the paused apply's Continue and Abort buttons.
+  if (result?.kind === 'detached-head') {
+    return <RebaseView message={result.message} sequencer={result.sequencer} host={host} />;
   }
 
   if (result && result.kind !== 'ok') {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { hasOrigin, preflight } from '../src/apply.ts';
+import { amendPreflight, hasOrigin, preflight } from '../src/apply.ts';
 import {
   ORDER,
   colleague,
@@ -151,4 +151,74 @@ test('preflight ignores branches outside the order being applied', async (t) => 
     (await preflight(cwd, readStackFrom(cwd), 'local', [...ORDER, 'unrelated'])) ?? '',
     /unrelated is 1 behind origin\/unrelated/,
   );
+});
+
+test('amendPreflight refuses when there is nothing to fold', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const stack = readStackFrom(cwd);
+  const target = { branch: 'feat/api', sha: git(cwd, 'rev-parse', 'feat/api'), subject: 'feat: add api routes' };
+
+  const refusal = await amendPreflight(cwd, stack, target, 'local', {});
+  assert.match(refusal ?? '', /nothing to fold/i);
+});
+
+test('amendPreflight refuses a tree that is both staged and unstaged', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const stack = readStackFrom(cwd);
+  git(cwd, 'checkout', 'feat/api');
+  const target = { branch: 'feat/api', sha: git(cwd, 'rev-parse', 'feat/api'), subject: 'feat: add api routes' };
+
+  writeFileSync(join(cwd, 'api.txt'), 'staged\n');
+  git(cwd, 'add', 'api.txt');
+  writeFileSync(join(cwd, 'api.txt'), 'staged, then edited again\n');
+
+  const refusal = await amendPreflight(cwd, stack, target, 'local', {});
+  assert.match(refusal ?? '', /both staged and unstaged/i);
+});
+
+test('amendPreflight allows a merged branch below the target', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const stack = readStackFrom(cwd);
+  stack.branches[0].isMerged = true;
+  git(cwd, 'checkout', 'feat/api');
+  const target = { branch: 'feat/api', sha: git(cwd, 'rev-parse', 'feat/api'), subject: 'feat: add api routes' };
+  writeFileSync(join(cwd, 'api.txt'), 'edited\n');
+  git(cwd, 'add', 'api.txt');
+
+  assert.equal(await amendPreflight(cwd, stack, target, 'local', {}), undefined);
+});
+
+test('amendPreflight refuses a merged branch at or above the target', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const stack = readStackFrom(cwd);
+  stack.branches[2].isMerged = true;
+  git(cwd, 'checkout', 'feat/api');
+  const target = { branch: 'feat/api', sha: git(cwd, 'rev-parse', 'feat/api'), subject: 'feat: add api routes' };
+  writeFileSync(join(cwd, 'api.txt'), 'edited\n');
+  git(cwd, 'add', 'api.txt');
+
+  const refusal = await amendPreflight(cwd, stack, target, 'local', {});
+  assert.match(refusal ?? '', /feat\/ui/);
+});
+
+test('amendPreflight refuses a reword whose subject is ambiguous', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  git(cwd, 'checkout', 'feat/api');
+  commit(cwd, 'api2.txt', 'more\n', 'feat: add api routes');
+  const stack = readStackFrom(cwd);
+  const target = {
+    branch: 'feat/api',
+    sha: git(cwd, 'rev-parse', 'feat/api'),
+    subject: 'feat: add api routes',
+  };
+
+  const refusal = await amendPreflight(cwd, stack, target, 'local', {
+    message: 'feat: add api routes, properly',
+  });
+  assert.match(refusal ?? '', /more than one commit/i);
 });

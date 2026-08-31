@@ -282,3 +282,16 @@ test('commitCounts forgets ranges it was not asked for', async (t) => {
   assert.ok(reader.spawns > afterSecond, 'an evicted range should re-read');
   assert.ok(afterSecond > afterFirst);
 });
+
+test('workingTree reports the commit HEAD is on', async (t) => {
+  const cwd = makeRepo();
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const reader = new ChangesReader();
+
+  const tree = await reader.workingTree(cwd);
+
+  assert.equal(tree.branch, 'feat/ui');
+  assert.equal(tree.head?.sha, git(cwd, 'rev-parse', 'HEAD'));
+  assert.equal(tree.head?.shortSha, git(cwd, 'rev-parse', '--short', 'HEAD'));
+  assert.equal(tree.head?.subject, 'feat: add ui components');
+});

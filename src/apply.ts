@@ -12,6 +12,7 @@ import {
   setLogSink,
   type RunResult,
 } from './git.ts';
+import { PARKED_REF, type AmendTarget } from './amend.ts';
 import { basesForOrder, rewriteMetadata } from './metadata.ts';
 import { linkableBranches, publishSteps } from './plan.ts';
 import { branchesBehind, readAllTracking } from './remote.ts';
@@ -125,6 +126,27 @@ async function rebaseInProgress(cwd: string): Promise<boolean> {
   return dirs.some((d) => existsSync(join(d, 'rebase-merge')) || existsSync(join(d, 'rebase-apply')));
 }
 
+/**
+ * A cherry-pick that stopped on a conflict.
+ *
+ * Keyed on `CHERRY_PICK_HEAD`, not on `.git/sequencer/`: verified against git
+ * 2.50.1, a single-commit pick leaves no sequencer directory at all, so the
+ * check `rebaseInProgress` uses would miss it entirely. Same two-directory
+ * search as that function, for the same reason — a worktree mid-pick keeps this
+ * in its private git dir.
+ */
+async function cherryPickInProgress(cwd: string): Promise<boolean> {
+  const gitDir = await gitCommonDir(cwd);
+  const priv = await run('git', ['rev-parse', '--absolute-git-dir'], cwd);
+  const dirs = [gitDir, priv.code === 0 ? priv.stdout.trim() : gitDir];
+  return dirs.some((d) => existsSync(join(d, 'CHERRY_PICK_HEAD')));
+}
+
+/** Either sequencer holding the repository open, mid-operation. */
+async function sequencerInProgress(cwd: string): Promise<boolean> {
+  return (await rebaseInProgress(cwd)) || (await cherryPickInProgress(cwd));
+}
+
 async function unmergedFiles(cwd: string): Promise<string[]> {
   const result = await run('git', ['diff', '--name-only', '--diff-filter=U'], cwd);
   return result.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
@@ -140,7 +162,27 @@ async function revParse(cwd: string, ref: string): Promise<string | undefined> {
 // where the subprocess actually happens.
 export { run as runCommand, firstLine, gitCommonDir, hasOrigin, ApplyError } from './git.ts';
 export type { RunResult } from './git.ts';
-export { rebaseInProgress, unmergedFiles };
+export { rebaseInProgress, cherryPickInProgress, sequencerInProgress, unmergedFiles };
+
+/**
+ * Steps that stay on this machine. Everything not in here reaches GitHub, which
+ * is what `drive()` stops at for a `local` scope and what gets the longer
+ * timeout.
+ */
+const LOCAL_KINDS = new Set<PlanStep['kind']>([
+  'rebase',
+  'metadata',
+  'trunk',
+  'stage',
+  'commit',
+  'ref',
+  'checkout',
+  'pick',
+  'autosquash',
+]);
+
+/** The two that can stop half-done and be resumed rather than simply failing. */
+const RESUMABLE_KINDS = new Set<PlanStep['kind']>(['rebase', 'pick', 'autosquash']);
 
 /**
  * gh-stack reports a stack it could not create or update as a *warning* and
@@ -242,6 +284,109 @@ export async function preflight(
 }
 
 /**
+ * The amend counterpart to `preflight`. Same contract: a string refuses.
+ *
+ * It inverts exactly one of the reorder rules — the clean-tree refusal, since a
+ * dirty tree is the whole input to an amend — and narrows a second. Everything
+ * else is kept, and the behind-upstream rule matters *more* here rather than
+ * less: `gh stack push` force-pushes with a lease against a stale remote ref.
+ */
+export async function amendPreflight(
+  cwd: string,
+  stack: Stack,
+  target: AmendTarget,
+  scope: ApplyScope,
+  options: { message?: string },
+): Promise<string | undefined> {
+  const repo = await run('git', ['rev-parse', '--is-inside-work-tree'], cwd);
+  if (repo.code !== 0) {
+    return 'Not a git repository.';
+  }
+
+  if (await sequencerInProgress(cwd)) {
+    return 'A rebase or cherry-pick is already in progress. Finish or abort it first.';
+  }
+
+  const staged = await run('git', ['diff', '--cached', '--name-only'], cwd);
+  const unstaged = await run('git', ['diff', '--name-only'], cwd);
+  const hasStaged = staged.stdout.trim().length > 0;
+  const hasUnstaged = unstaged.stdout.trim().length > 0;
+
+  if (!hasStaged && !hasUnstaged && options.message === undefined) {
+    return 'Nothing to fold in. Stage a change, or edit the message, first.';
+  }
+
+  // Restack folds what is staged, and the rebase that follows needs a clean
+  // tree — leftover unstaged changes would fail it mid-cascade, with branches
+  // already rewritten. Refused up front, naming both fixes.
+  if (hasStaged && hasUnstaged) {
+    return (
+      'The working tree is both staged and unstaged. Restack folds in what is staged, ' +
+      'and the rebase that follows needs a clean tree — stage the rest, or stash it.'
+    );
+  }
+
+  // Merged branches, precisely. The blanket rule in `preflight()` exists
+  // because gh-stack rejects reordering around a merged branch; an amend does
+  // not reorder, and branches *below* the target are never rewritten. The
+  // distinction matters: a merged bottom branch with live work above it is the
+  // single most common state a stack is in, and the blanket rule would make
+  // amend useless there.
+  const names = stack.branches.map((b) => b.name);
+  const from = names.indexOf(target.branch);
+  if (from < 0) {
+    return `Branch ${target.branch} is not part of this stack.`;
+  }
+  const mergedAbove = stack.branches
+    .slice(from)
+    .filter((b) => b.isMerged)
+    .map((b) => b.name);
+  if (mergedAbove.length > 0) {
+    return `${mergedAbove.join(', ')} ${mergedAbove.length === 1 ? 'is' : 'are'} already merged, and amending would rewrite ${mergedAbove.length === 1 ? 'it' : 'them'}.`;
+  }
+
+  const behind = branchesBehind(await readAllTracking(cwd), names.slice(from));
+  if (behind.length > 0) {
+    const list = behind
+      .map((t) => `${t.branch} is ${t.behind} behind ${t.upstream ?? 'its upstream'}`)
+      .join('; ');
+    return (
+      `${list}. Fetch and sync before rewriting — \`gh stack push\` force-pushes ` +
+      `with a lease against a stale remote ref, which would drop those commits.`
+    );
+  }
+
+  // `amend!` is matched by subject, so a duplicated subject in the range being
+  // autosquashed would silently fold the reword into the wrong commit. Only
+  // rewords are affected — `--fixup=<sha>` names its target outright.
+  if (options.message !== undefined) {
+    const base = stack.branches[from].base;
+    const same = await run('git', ['log', '--format=%s', `${base}..${target.branch}`], cwd);
+    const matches = same.stdout
+      .split('\n')
+      .filter((line) => line.trim() === target.subject.trim()).length;
+    if (matches > 1) {
+      return (
+        `More than one commit on ${target.branch} has the subject “${target.subject}”. ` +
+        'Autosquash matches a reword by subject, so it cannot tell them apart. ' +
+        'Reword one of them from a terminal first.'
+      );
+    }
+  }
+
+  const gitDir = await gitCommonDir(cwd);
+  if (!existsSync(join(gitDir, 'gh-stack'))) {
+    return 'No .git/gh-stack file. Restack cannot update gh-stack’s state, and rebasing without it would leave the stack describing the old order.';
+  }
+
+  if (scope === 'publish' && !(await hasOrigin(cwd))) {
+    return 'No `origin` remote to push to.';
+  }
+
+  return undefined;
+}
+
+/**
  * Drives one reorder from start to finish, surviving conflicts in between.
  *
  * The state lives here rather than in the webview because a conflict pauses
@@ -293,6 +438,23 @@ export class ApplyRunner {
 
   get active(): boolean {
     return this.session !== undefined;
+  }
+
+  /**
+   * Stopped on a conflict, waiting for the user — not finished.
+   *
+   * `start()` resolves either way: a conflict returns from drive() exactly as a
+   * clean finish does, and only the phase tells them apart. Callers need this
+   * before they carry on to publish and refresh, because neither is right yet.
+   * Refreshing in particular reads the stack while a rebase holds HEAD detached,
+   * which gh-stack cannot do — the resulting error screen lands on top of the
+   * conflict panel and takes Continue and Abort with it.
+   *
+   * `active` is the wrong question: the session deliberately outlives a
+   * *successful* local apply so the panel can still offer Push & submit and Undo.
+   */
+  get paused(): boolean {
+    return this.session?.lastProgress?.phase === 'conflict';
   }
 
   /** Progress to replay to a webview that reconnected mid-apply. */
@@ -376,9 +538,9 @@ export class ApplyRunner {
     if (!session || session.lastProgress?.phase !== 'conflict') {
       return;
     }
-    // The rebase ending underneath us — someone ran `git rebase --continue`
+    // The sequencer ending underneath us — someone ran `git rebase --continue`
     // themselves — is resume()'s case to handle, not a state to re-render.
-    if (!(await rebaseInProgress(session.cwd))) {
+    if (!(await sequencerInProgress(session.cwd))) {
       return;
     }
     this.emitConflict(session, await unmergedFiles(session.cwd));
@@ -428,7 +590,8 @@ export class ApplyRunner {
   async resume(): Promise<void> {
     const session = this.require();
 
-    if (!(await rebaseInProgress(session.cwd))) {
+    const picking = await cherryPickInProgress(session.cwd);
+    if (!picking && !(await rebaseInProgress(session.cwd))) {
       // Resolved and continued outside Restack. Treat the paused step as done.
       session.statuses[session.cursor] = 'done';
       session.cursor += 1;
@@ -442,9 +605,13 @@ export class ApplyRunner {
       return;
     }
 
-    const result = await run('git', ['rebase', '--continue'], session.cwd);
+    // Which one, by which is open. A cherry-pick during an amend is a distinct
+    // sequencer from the rebase that follows it, and `rebase --continue`
+    // against an open pick fails with "no rebase in progress".
+    const args = picking ? ['cherry-pick', '--continue'] : ['rebase', '--continue'];
+    const result = await run('git', args, session.cwd);
     if (result.code !== 0) {
-      await this.reportRebaseFailure(result);
+      await this.reportSequencerFailure(result);
       return;
     }
 
@@ -542,6 +709,9 @@ export class ApplyRunner {
     if (await rebaseInProgress(cwd)) {
       await run('git', ['rebase', '--abort'], cwd);
     }
+    if (await cherryPickInProgress(cwd)) {
+      await run('git', ['cherry-pick', '--abort'], cwd);
+    }
 
     // Detach first: update-ref refuses to move the branch HEAD points at.
     await run('git', ['checkout', '--detach', '--quiet'], cwd);
@@ -553,6 +723,8 @@ export class ApplyRunner {
     if (snapshot.branch) {
       await run('git', ['checkout', '--force', '--quiet', snapshot.branch], cwd);
     }
+
+    await this.restoreParked(session);
 
     // Every branch is back at its pre-apply sha and HEAD is home, so the tree
     // is in the state the stash was taken from — the cleanest pop there is.
@@ -618,6 +790,34 @@ export class ApplyRunner {
     await this.options.restoreStash?.(session.cwd, session.stash);
   }
 
+  /**
+   * Put an amend's folded-in change back in the working tree.
+   *
+   * The reason undo needed touching at all. Rolling back is `update-ref` then
+   * `checkout --force`, which for an amend would erase the very work that was
+   * just folded in — the change exists only inside the rewritten commit by the
+   * time this runs.
+   *
+   * The parked commit's parent *is* the tip that was just restored, so the diff
+   * applies exactly: `--no-commit` leaves it staged with HEAD unmoved, which is
+   * the state the user was in before pressing Amend. `--quit` clears the
+   * sequencer state a `--no-commit` pick leaves behind; `--abort` would undo
+   * the restore.
+   */
+  private async restoreParked(session: Session): Promise<void> {
+    if (!session.plan.amend?.parked) {
+      return;
+    }
+    const picked = await run('git', ['cherry-pick', '--no-commit', PARKED_REF], session.cwd);
+    await run('git', ['cherry-pick', '--quit'], session.cwd);
+    if (picked.code !== 0) {
+      this.options.log?.(
+        `Could not restore the parked change: ${firstLine(picked.stderr)}. ` +
+          `It is still reachable as ${PARKED_REF}.`,
+      );
+    }
+  }
+
   /** End the session and drop the persisted copy along with it. */
   private clear(): void {
     this.session = undefined;
@@ -637,10 +837,13 @@ export class ApplyRunner {
 
     while (session.cursor < session.plan.steps.length) {
       const step = session.plan.steps[session.cursor];
-      const remote = step.kind === 'push' || step.kind === 'submit' || step.kind === 'link';
 
-      if (remote && session.scope === 'local') {
+      if (!LOCAL_KINDS.has(step.kind) && session.scope === 'local') {
         // Local scope stops here; the UI offers publish as a separate action.
+        // Reaching the boundary *is* the local half finishing — an amend at the
+        // top of a stack has no metadata step to say so, because no branch's
+        // recorded base moved.
+        session.localComplete = true;
         break;
       }
 
@@ -687,7 +890,7 @@ export class ApplyRunner {
     }
 
     const file = step.exec.file === 'gh' ? session.ghPath : 'git';
-    const timeout = step.kind === 'rebase' ? LOCAL_TIMEOUT_MS : REMOTE_TIMEOUT_MS;
+    const timeout = LOCAL_KINDS.has(step.kind) ? LOCAL_TIMEOUT_MS : REMOTE_TIMEOUT_MS;
     const result = await run(file, step.exec.args, session.cwd, timeout);
 
     if (result.code === 0) {
@@ -706,8 +909,8 @@ export class ApplyRunner {
       return true;
     }
 
-    if (step.kind === 'rebase') {
-      await this.reportRebaseFailure(result);
+    if (RESUMABLE_KINDS.has(step.kind)) {
+      await this.reportSequencerFailure(result);
       return true;
     }
 
@@ -720,15 +923,15 @@ export class ApplyRunner {
   }
 
   /**
-   * A non-zero rebase means one of two very different things: it stopped on a
-   * conflict and left the repository mid-rebase (recoverable — the user
-   * resolves and continues), or it refused outright (not recoverable in place).
-   * The rebase directory is what tells them apart.
+   * A non-zero rebase or cherry-pick means one of two very different things: it
+   * stopped on a conflict and left the repository mid-sequencer (recoverable —
+   * the user resolves and continues), or it refused outright (not recoverable
+   * in place). Whether a sequencer is open is what tells them apart.
    */
-  private async reportRebaseFailure(result: RunResult): Promise<void> {
+  private async reportSequencerFailure(result: RunResult): Promise<void> {
     const session = this.require();
 
-    if (await rebaseInProgress(session.cwd)) {
+    if (await sequencerInProgress(session.cwd)) {
       const files = await unmergedFiles(session.cwd);
       session.statuses[session.cursor] = 'running';
       // This is where the pause begins, so these files *are* the conflict set

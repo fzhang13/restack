@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { BranchChanges, CommitSummary, FileChange, WorkingTree } from '../../model';
+import type { BranchChanges, CommitSummary, FileChange } from '../../model';
 import { vscodeApi } from '../vscode';
 
 /** The letter git uses, spelled out for the tooltip and the screen reader. */
@@ -17,7 +17,16 @@ function statusLabel(status: string): string {
   return STATUS_LABEL[status] ?? status;
 }
 
-function FileRow({ file, onOpen }: { file: FileChange; onOpen?: () => void }) {
+export function FileRow({
+  file,
+  onOpen,
+  action,
+}: {
+  file: FileChange;
+  onOpen?: () => void;
+  /** A stage/unstage button on the right. Only the working-tree lists pass one. */
+  action?: { label: string; title: string; disabled?: boolean; onClick: () => void };
+}) {
   const label = `${file.path} — ${statusLabel(file.status)}`;
   return (
     <li className="change__file">
@@ -41,11 +50,38 @@ function FileRow({ file, onOpen }: { file: FileChange; onOpen?: () => void }) {
         </span>
         <span className="change__path">{file.path}</span>
       </button>
+      {action && (
+        <button
+          type="button"
+          className="change__action"
+          title={action.title}
+          aria-label={action.title}
+          disabled={action.disabled}
+          onPointerDown={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            action.onClick();
+          }}
+        >
+          {action.label}
+        </button>
+      )}
     </li>
   );
 }
 
-function CommitRow({ commit }: { commit: CommitSummary }) {
+function CommitRow({
+  commit,
+  branch,
+  canAmend,
+}: {
+  commit: CommitSummary;
+  /** The branch this commit belongs to — what the amend plan is anchored on. */
+  branch: string;
+  /** False when there is nothing staged; reword is still offered. */
+  canAmend: boolean;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <li className="change__commit">
@@ -65,6 +101,52 @@ function CommitRow({ commit }: { commit: CommitSummary }) {
         <span className="change__subject">{commit.subject}</span>
         <span className="change__meta">{commit.relativeDate}</span>
       </button>
+      <span className="commit__actions">
+        <button
+          type="button"
+          className="change__action"
+          title={
+            canAmend
+              ? `Fold what is staged into ${commit.shortSha}, then replay the branches above it`
+              : 'Stage something to fold in first'
+          }
+          aria-label={`Amend ${commit.shortSha}`}
+          disabled={!canAmend}
+          onPointerDown={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            vscodeApi.postMessage({
+              type: 'amend',
+              branch,
+              sha: commit.sha,
+              subject: commit.subject,
+            });
+          }}
+        >
+          ⤵
+        </button>
+        <button
+          type="button"
+          className="change__action"
+          title={`Reword ${commit.shortSha}. Content is untouched; the branches above are replayed.`}
+          aria-label={`Reword ${commit.shortSha}`}
+          onPointerDown={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            vscodeApi.postMessage({
+              type: 'amend',
+              branch,
+              sha: commit.sha,
+              subject: commit.subject,
+              reword: true,
+            });
+          }}
+        >
+          ✎
+        </button>
+      </span>
       {open && (
         <ul className="change__files">
           {commit.files.length === 0 && <li className="change__empty">No file changes</li>}
@@ -102,14 +184,14 @@ export function ChangeTree({
   branch,
   changes,
   changesEpoch,
-  workingTree,
+  hasStaged = false,
 }: {
   branch: string;
   changes?: BranchChanges;
   /** Bumped by the host state whenever the cached changes are dropped. */
   changesEpoch: number;
-  /** Only passed for the row HEAD is on. */
-  workingTree?: WorkingTree | null;
+  /** True when the index holds something an amend could fold in. */
+  hasStaged?: boolean;
 }) {
   // Mounting is the open, so this covers expanding; the epoch covers a refresh
   // arriving while already open. Deliberately not keyed on `changes` — the
@@ -118,39 +200,11 @@ export function ChangeTree({
     vscodeApi.postMessage({ type: 'loadChanges', branch });
   }, [branch, changesEpoch]);
 
-  const dirty =
-    workingTree &&
-    (workingTree.staged.length > 0 ||
-      workingTree.unstaged.length > 0 ||
-      workingTree.untracked.length > 0);
-
+  // No working-tree list here any more: WorkingTreePanel renders it once,
+  // pinned above the columns. There is one working tree, not one per branch,
+  // and showing it in both places listed the same files twice.
   return (
     <div className="change">
-      {dirty && workingTree && (
-        <div className="change__section">
-          <div className="change__heading">Working tree</div>
-          <ul className="change__files">
-            {workingTree.staged.map((file) => (
-              <FileRow
-                key={`staged:${file.path}`}
-                file={file}
-                onOpen={() => vscodeApi.postMessage({ type: 'openWorkingFile', path: file.path })}
-              />
-            ))}
-            {workingTree.unstaged.map((file) => (
-              <FileRow
-                key={`unstaged:${file.path}`}
-                file={file}
-                onOpen={() => vscodeApi.postMessage({ type: 'openWorkingFile', path: file.path })}
-              />
-            ))}
-            {workingTree.untracked.map((path) => (
-              <FileRow key={`untracked:${path}`} file={{ status: 'A', path }} />
-            ))}
-          </ul>
-        </div>
-      )}
-
       {!changes && <div className="change__empty">Reading…</div>}
 
       {changes && changes.commits.length === 0 && (
@@ -186,7 +240,7 @@ export function ChangeTree({
           </div>
           <ul className="change__commits">
             {changes.commits.map((commit) => (
-              <CommitRow key={commit.sha} commit={commit} />
+              <CommitRow key={commit.sha} commit={commit} branch={branch} canAmend={hasStaged} />
             ))}
           </ul>
         </>

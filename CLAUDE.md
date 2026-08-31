@@ -42,14 +42,18 @@ That's why `vscode:prepublish` chains typecheck, test, and build.
 
 Inside `src/`:
 
-- `plan.ts` / `stack.ts` / `parse.ts` / `model.ts` / `workspace.ts` — pure logic
-  and types, no I/O. The test harness bundles these into a browser page, so keep
-  them free of Node imports.
+- `plan.ts` / `stack.ts` / `parse.ts` / `model.ts` / `workspace.ts` / `amend.ts`
+  — pure logic and types, no I/O. The test harness bundles these into a browser
+  page, so keep them free of Node imports.
 - `git.ts` — the one logged place a child process spawns. `candidates.ts` keeps
   its own unlogged helper on purpose: it runs a merge-base per branch on every
   refresh, and that volume would bury the commands a user wants to read in the
   output channel.
-- `view/provider.ts` + `view/operations/*` — the nine stack operations, plus
+- `worktree.ts` — `stagePaths` / `unstagePaths`, two thin `run()` wrappers, kept
+  out of `view/operations/worktree.ts` only so the tests can reach them:
+  everything under `view/operations/` imports `vscode`, which does not resolve
+  under `node --test`.
+- `view/provider.ts` + `view/operations/*` — the eleven stack operations, plus
   `setup.ts`, which is the one that runs before a stack can be read at all:
   `gh extension install github/gh-stack`. They reach the provider through the
   narrow `Host` interface (`view/host.ts`) rather than taking six arguments each.
@@ -66,15 +70,40 @@ remaining uses of it. `view/folder.ts` resolves it (one folder, then a
 remembered choice, then a `.git/gh-stack` probe, then ask) and `refresh()` is
 what settles it, so `cwd()` can stay synchronous.
 
-`webview/styles.css` is nine `@import`s, cut on line boundaries rather than by
+Staging, unstaging, and a plain commit **deliberately bypass `ApplyRunner`**.
+They are one git command each, they cannot half-finish, and there is nothing to
+resume — routing them through the runner would put a step list and a Continue
+button in front of `git add`. An **amend** is the opposite and does go through
+the runner: `src/amend.ts` builds a `Plan` whose steps rewrite the target commit
+and replay every branch above it, so it needs the same pause-on-conflict,
+Continue, and Undo the reorder path has. `abort()` restores `refs/restack/parked`
+for exactly that reason — the `checkout --force` would otherwise erase the change
+that had just been folded in.
+
+`runner.start()` **resolves on a conflict as well as on a clean finish** — a
+pause returns from `drive()` the same way success does. Callers must check
+`runner.paused` before carrying on: publishing is not possible yet, and a
+`refresh()` there reads the stack with HEAD detached mid-rebase, which
+`gh stack view` cannot do. That posts a `detached-head` result over the paused
+apply, and the panel it replaces is the one holding Continue and Abort.
+`runner.active` is the wrong test — the session deliberately outlives a
+*successful* local apply so Push & submit and Undo stay on screen.
+`App.tsx` gives `detached-head` its own gate (`views/RebaseView.tsx`) rather than
+the generic error screen, so a window reloaded mid-conflict still renders the
+plan panel; the provider fills in `sequencer` because only the host can tell a
+stopped rebase from a plain detached checkout.
+
+`webview/styles.css` is ten `@import`s, cut on line boundaries rather than by
 concern. `.badge--new`, `.badge--pr-base`, and `.trunk--current` depend on their
 position in the cascade — reordering the imports changes rendering.
+`worktree.css` is last on purpose: it declares `.change__action` and
+`.change__file`, which rows that `changes.css` otherwise owns also use.
 
 ## Commands
 
 ```bash
 npm run typecheck     # tsc --noEmit; esbuild does not typecheck
-npm test              # node --test, 213 tests, real git in temp repos
+npm test              # node --test, 250 tests, real git in temp repos
 npm run build         # or `watch`
 npm run package       # -> restack-<version>.vsix (runs prepublish first)
 npx vsce ls --tree    # exactly what would ship
@@ -88,7 +117,7 @@ never to `gh`, so they run anywhere git exists.
 `test/harness/index.html` renders the webview in a plain browser with no
 extension host. `?view=` reaches states a single fixture can't be in at once:
 `init`, `outside`, `drift`, `trunk`, `away`, `multi`, `github`, `conflict`,
-`setup`, `no-gh`, `changes`, `folder`.
+`setup`, `no-gh`, `changes`, `folder`, `amend`, `rebase`, `detached`.
 Rebuild it with `node test/harness/build-driver.mjs` — it bundles the real
 `plan.ts`, so the page computes plans with the same code the extension runs.
 

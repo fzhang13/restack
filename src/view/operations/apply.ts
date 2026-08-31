@@ -53,6 +53,11 @@ export async function handleApply(host: Host, order: string[]): Promise<void> {
     await startWithStash(cwd, host, stash, () =>
       host.runner.start(cwd, host.ghPath(), stack, plan, order, 'local', stash),
     );
+    // Same pause as the amend path: start() resolved, but the rebase is still
+    // open and the panel is showing Continue / Abort. See ApplyRunner.paused.
+    if (host.runner.paused) {
+      return;
+    }
     if (scope === 'publish') {
       await handlePublish(host);
     }
