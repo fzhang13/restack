@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { hasOrigin, preflight } from '../../apply';
 import { blockedByApply, type Host } from '../host';
 import { confirmApply, confirmPublish, confirmPushSubmit } from '../prompts';
+import { offerStash, restoreStash, startWithStash } from './stash';
 
 export async function handleApply(host: Host, order: string[]): Promise<void> {
   const cwd = host.cwd();
@@ -32,16 +33,26 @@ export async function handleApply(host: Host, order: string[]): Promise<void> {
     return;
   }
 
+  // After the confirmation, so nothing is stashed for an apply the user then
+  // backs out of, and before the preflight, which is where the dirty-tree
+  // refusal lives. From start() onward the session owns the sha.
+  const stash = await offerStash(cwd, host, 'Applying the reorder');
+
   const blocked = await preflight(cwd, stack, scope, order);
   if (blocked) {
     void vscode.window.showErrorMessage(`Restack: ${blocked}`);
+    if (stash) {
+      await restoreStash(cwd, host, stash);
+    }
     return;
   }
 
   await host.guard(async () => {
     // Always run the local half first. Publishing is confirmed again after
     // the rebases land, when the user can see what actually happened.
-    await host.runner.start(cwd, host.ghPath(), stack, plan, order, 'local');
+    await startWithStash(cwd, host, stash, () =>
+      host.runner.start(cwd, host.ghPath(), stack, plan, order, 'local', stash),
+    );
     if (scope === 'publish') {
       await handlePublish(host);
     }
