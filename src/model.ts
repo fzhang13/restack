@@ -54,6 +54,56 @@ export interface CandidateBranch {
   commitCount: number;
 }
 
+/** One file touched by a commit or a diff, as `--name-status` reports it. */
+export interface FileChange {
+  /** A, M, D, R, C, T — git's own letters, score suffix stripped. */
+  status: string;
+  path: string;
+  /** Set only for renames and copies; the path it came from. */
+  oldPath?: string;
+}
+
+export interface CommitSummary {
+  sha: string;
+  shortSha: string;
+  subject: string;
+  author: string;
+  /** `%ar` — "3 days ago". Display only, never parsed. */
+  relativeDate: string;
+  files: FileChange[];
+}
+
+/**
+ * What one branch changed, read for the range plan.ts would replay.
+ *
+ * `base` is the recorded base SHA, not the parent branch's current tip — so
+ * this is the same range a rebase step takes, which is the number this tool
+ * should report. When gh-stack flags a branch `needsRebase` the recorded base
+ * is stale and the range can include commits the parent already has; the row
+ * carries a `needs rebase` badge saying so.
+ */
+export interface BranchChanges {
+  branch: string;
+  base: string;
+  tip: string;
+  /** Newest first, as `git log` emits them. */
+  commits: CommitSummary[];
+  /** Combined `base`-to-`tip` diff, for the branch-level summary row. */
+  files: FileChange[];
+}
+
+/** Paths grouped by index state, from `git status --porcelain=v1 -z`. */
+export interface StatusGroups {
+  staged: FileChange[];
+  unstaged: FileChange[];
+  untracked: string[];
+}
+
+export interface WorkingTree extends StatusGroups {
+  /** Branch HEAD is on, absent when detached. */
+  branch?: string;
+}
+
 /**
  * Where a branch stands against its upstream, read from local refs only.
  *
@@ -386,11 +436,23 @@ export type HostMessage =
        * remote, no auth, or `restack.readRemoteStacks` is off.
        */
       remoteStacks: RemoteStackSummary[];
+      /** Commits in each branch's own range, keyed by branch. See changes.ts. */
+      commitCounts: Record<string, number>;
+      /** Uncommitted state, so the HEAD row can render without a round trip. */
+      workingTree?: WorkingTree;
     }
   | { type: 'plan'; plan: Plan }
   | { type: 'loading' }
   | { type: 'apply'; progress: ApplyProgress }
-  | { type: 'applyCleared' };
+  | { type: 'applyCleared' }
+  /** Answer to `loadChanges`, for one branch. */
+  | { type: 'changes'; changes: BranchChanges }
+  /**
+   * The working tree alone, posted by the save/index watcher. Deliberately not
+   * a full refresh: re-reading the whole stack on every keystroke-to-disk would
+   * spawn gh for nothing.
+   */
+  | { type: 'workingTree'; workingTree: WorkingTree };
 
 /** Messages: webview -> extension host. */
 export type WebviewMessage =
@@ -498,4 +560,23 @@ export type WebviewMessage =
   | { type: 'installGhStack' }
   /** Reveal `restack.ghPath`, for a gh CLI installed somewhere unusual. */
   | { type: 'openGhPathSetting' }
-  | { type: 'showLog' };
+  | { type: 'showLog' }
+  /**
+   * Read what `branch` changed. Sent when a row is expanded, and again by every
+   * open row when a refresh invalidates the webview's copy; collapsing sends
+   * nothing, because the cache lives on the host and is keyed by content, so it
+   * has no interest in what is on screen.
+   */
+  | { type: 'loadChanges'; branch: string }
+  /**
+   * Open `sha`'s version of a file beside an earlier one.
+   *
+   * `base` is optional because the two lists that send this ask different
+   * questions. A file row inside one commit wants that commit against its own
+   * parent, which is `sha^` and needs no base. A row in the branch-level list
+   * came from `base..tip`, so its left-hand side is the branch's base — `sha^`
+   * there would compare a file the tip commit never touched against itself.
+   */
+  | { type: 'openCommitFile'; sha: string; base?: string; path: string; oldPath?: string }
+  /** Open an uncommitted file beside HEAD's version of it. */
+  | { type: 'openWorkingFile'; path: string };

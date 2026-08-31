@@ -1,0 +1,164 @@
+/*
+ * The change tree under an expanded row.
+ *
+ * Imported last in styles.css, so nothing here can disturb the cascade the
+ * badge and trunk rules depend on. Everything is scoped under .change or
+ * .row__ to keep it that way.
+ */
+
+/*
+ * `.row` (graph.css) is a horizontal flex line, which is right up until a row
+ * has something *under* it. An expanded row has two children — the line, and
+ * the tree below it — so it has to stack them; left as a flex row the tree
+ * lays out beside the branch name and runs off the side of the panel.
+ *
+ * The rail keeps working: `.row::before` is absolutely positioned against the
+ * row, so it still spans the taller box, and the node sits inside `.row__line`.
+ */
+.row--expanded {
+  display: block;
+}
+
+.row__line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.row__twisty {
+  flex: none;
+  width: 16px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.row__twisty:hover {
+  color: var(--vscode-foreground);
+}
+
+.badge--commits {
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
+.change {
+  margin: 2px 0 6px 22px;
+  padding-left: 8px;
+  border-left: 1px solid var(--vscode-panel-border);
+  font-size: 0.92em;
+}
+
+.change__section {
+  margin-bottom: 4px;
+}
+
+.change__heading {
+  color: var(--vscode-descriptionForeground);
+  text-transform: uppercase;
+  font-size: 0.85em;
+  letter-spacing: 0.04em;
+  margin: 4px 0 2px;
+}
+
+.change__empty {
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+  padding: 2px 0;
+}
+
+.change__commits,
+.change__files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.change__commit-button,
+.change__file-button {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 1px 4px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.change__commit-button:hover,
+.change__file-button:hover:not(:disabled) {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.change__file-button:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.change__twisty {
+  flex: none;
+  width: 10px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 9px;
+}
+
+.change__sha {
+  flex: none;
+  color: var(--vscode-textPreformat-foreground);
+  font-family: var(--vscode-editor-font-family), monospace;
+}
+
+.change__subject,
+.change__path {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.change__meta {
+  flex: none;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+
+.change__files {
+  margin-left: 16px;
+}
+
+.change__status {
+  flex: none;
+  width: 12px;
+  text-align: center;
+  font-family: var(--vscode-editor-font-family), monospace;
+  font-weight: 600;
+  color: var(--vscode-descriptionForeground);
+}
+
+.change__status--A {
+  color: var(--vscode-gitDecoration-addedResourceForeground);
+}
+
+.change__status--M {
+  color: var(--vscode-gitDecoration-modifiedResourceForeground);
+}
+
+.change__status--D {
+  color: var(--vscode-gitDecoration-deletedResourceForeground);
+}
+
+.change__status--R,
+.change__status--C {
+  color: var(--vscode-gitDecoration-renamedResourceForeground);
+}

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { ApplyRunner } from '../apply';
+import type { ChangesReader } from '../changes';
 import type {
   HostMessage,
   Plan,
@@ -30,6 +31,10 @@ export interface Host {
   readonly remote?: RemoteState;
   readonly plan?: Plan;
   readonly order?: string[];
+  /** Reads and caches per-branch commits, files, and counts. */
+  readonly changes: ChangesReader;
+  /** Every local branch head as of the last refresh, keyed by name. */
+  readonly tips: Map<string, string>;
   cwd(): string | undefined;
   ghPath(): string;
   post(message: HostMessage): void;

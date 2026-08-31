@@ -26,7 +26,15 @@ export async function git(
   args: string[],
 ): Promise<{ ok: boolean; stdout: string; error: string }> {
   try {
-    const { stdout } = await execFileAsync('git', args, { cwd, timeout: 20_000 });
+    // maxBuffer matches git.ts and changes.ts. It is not decoration here: this
+    // helper now carries whole file contents for the diff panes, not just the
+    // one-line plumbing it started as, and Node's 1 MiB default would kill git
+    // mid-read and leave an ordinary large file rendering as an empty diff.
+    const { stdout } = await execFileAsync('git', args, {
+      cwd,
+      timeout: 20_000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
     return { ok: true, stdout, error: '' };
   } catch (err) {
     const e = err as { stderr?: string; message?: string };

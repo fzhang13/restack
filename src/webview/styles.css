@@ -18,3 +18,4 @@
 @import './styles/plan.css'; /* .plan, .steps, .step*, .apply*, .conflicts*, .publish */
 @import './styles/init.css'; /* .message, .empty, .init*, .badge--new */
 @import './styles/switcher.css'; /* .stacks*, .switcher*, .badge--pr-base */
+@import './styles/changes.css'; /* .change*, .row__line, .row__twisty, .badge--commits */
