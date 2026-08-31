@@ -28,6 +28,8 @@ import { webviewHtml } from './html';
 import { pickBase, pickBranch, pickStack } from './picks';
 import { updateStatus } from './status';
 import { handleAddBranch } from './operations/add';
+import { handleAmend } from './operations/amend';
+import { handleCommit, handleStage, handleUnstage } from './operations/worktree';
 import { handleApply, handlePublish, handlePushSubmit } from './operations/apply';
 import { handleChangeBase } from './operations/base';
 import { handleLoadChanges } from './operations/changes';
@@ -434,6 +436,18 @@ export class StackViewProvider implements vscode.WebviewViewProvider, Host {
           break;
         case 'openWorkingFile':
           void openWorkingDiff(this, message.path);
+          break;
+        case 'stage':
+          void handleStage(this, message.paths);
+          break;
+        case 'unstage':
+          void handleUnstage(this, message.paths);
+          break;
+        case 'commit':
+          void handleCommit(this, message.message);
+          break;
+        case 'amend':
+          void handleAmend(this, message);
           break;
         case 'checkout':
           void handleCheckout(this, message.branch);

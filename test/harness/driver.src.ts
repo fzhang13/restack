@@ -86,6 +86,11 @@ const harnessWorkingTree: WorkingTree = {
   staged: [{ status: 'M', path: 'src/webview/views/StackView.tsx' }],
   unstaged: [{ status: 'M', path: 'src/changes.ts' }],
   untracked: ['scratch.md'],
+  head: {
+    sha: '4f2a1c9e8b7d6a5f4e3d2c1b0a9f8e7d6c5b4a39',
+    shortSha: '4f2a1c9',
+    subject: 'feat: add ui components',
+  },
 };
 
 const harnessCounts: Record<string, number> = { 'feat/auth': 1, 'feat/api': 2, 'feat/ui': 0 };
@@ -100,6 +105,7 @@ const harnessCounts: Record<string, number> = { 'feat/auth': 1, 'feat/api': 2, '
  *   ?view=drift   a stack whose branches were adopted but never rebased
  *   ?view=trunk   HEAD on the trunk rather than on any stack branch
  *   ?view=away    HEAD on a branch gh-stack does not list at all
+ *   ?view=amend   like ?view=changes; expand a row for the amend/reword buttons
  *   ?view=conflict a paused rebase, for the conflict panel
  *   ?view=behind  the trunk moved under the stack — the sync banner
  *   ?view=diverged a stack branch is behind its upstream — the blocking banner
@@ -389,7 +395,7 @@ function sendStack() {
       // Counts are always on in the real host, so they are on in every view
       // here too. The tree and the working tree are the changes view's own.
       commitCounts: harnessCounts,
-      workingTree: view === 'changes' ? harnessWorkingTree : undefined,
+      workingTree: view === 'changes' || view === 'amend' ? harnessWorkingTree : undefined,
     },
     '*',
   );

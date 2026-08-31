@@ -59,6 +59,43 @@ export async function confirmApply(
   return undefined;
 }
 
+/**
+ * Confirm an amend, and choose whether to publish it.
+ *
+ * Modal, like `confirmApply`, and for the same reason: it rewrites history on
+ * branches that may already have pull requests open against them. The step
+ * count is the honest measure of how much is about to happen — a one-line fix
+ * at the bottom of a five-branch stack is fourteen commands.
+ */
+export async function confirmAmend(
+  target: { branch: string; shortSha: string; subject: string },
+  plan: Plan,
+  canPublish: boolean,
+): Promise<ApplyScope | undefined> {
+  const replays = plan.steps.filter((s) => s.kind === 'rebase').length;
+  const detail =
+    `Folding what is staged into ${target.shortSha} “${target.subject}” on ${target.branch}.\n\n` +
+    (replays > 0
+      ? `${replays} branch${replays === 1 ? '' : 'es'} above it will be replayed.`
+      : 'Nothing sits above it, so nothing else is replayed.') +
+    '\n\nEvery command is listed in the panel, and Roll back restores the branches and your change.';
+
+  const choices = canPublish ? ['Amend', 'Amend & Publish'] : ['Amend'];
+  const picked = await vscode.window.showWarningMessage(
+    `Amend ${target.shortSha} and replay the stack?`,
+    { modal: true, detail },
+    ...choices,
+  );
+
+  if (picked === 'Amend') {
+    return 'local';
+  }
+  if (picked === 'Amend & Publish') {
+    return 'publish';
+  }
+  return undefined;
+}
+
 export async function confirmRemove(cwd: string, stack: Stack): Promise<UnstackScope | undefined> {
   const names = stack.branches.map((b) => b.name);
   const withPrs = stack.branches.filter((b) => b.prNumber);

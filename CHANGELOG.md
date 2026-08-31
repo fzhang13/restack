@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.9.0
+
+### Added
+
+- **The working tree is its own section now, pinned above the stack.** In 0.8.0
+  the uncommitted files were nested under the HEAD branch row, behind the same
+  twisty as that branch's commit history — so the live half of the panel was
+  invisible unless you already knew to go looking for it. It is now a
+  **Working tree** block of its own, sitting above CURRENT and always open.
+
+  There is one working tree, not one per branch, so it is no longer listed under
+  a branch row at all. Expanding a branch still shows what that branch changed
+  and the commits it is made of, unchanged.
+
+  The section renders nothing when the tree is clean. The reorder view is
+  designed around the clean case, and a permanent three lines saying "nothing
+  here" is worse than an absence.
+
+- **Stage, unstage, and commit without leaving the panel.** Each file carries a
+  `+` or `−`; the header carries **Stage all** and **Unstage all**. Below the
+  lists is a message box and a **Commit** button — Cmd/Ctrl+Enter commits, the
+  same binding the SCM view uses.
+
+  Commit only ever commits what is staged. It never sweeps up unstaged edits, so
+  the button is disabled until something is in the index and the message is
+  non-empty.
+
+- **Amend any commit in the stack, with the branches above replayed for you.**
+  The working-tree section has an **Amend `<sha>`** button for the tip of the
+  branch you are on, and every commit row in an expanded branch's history
+  carries `⤵` (fold what is staged into this commit) and `✎` (reword it).
+
+  What runs is a plan, shown in the panel before it starts and step by step as
+  it goes, exactly like a reorder: `git commit --fixup`, then
+  `git rebase -i --autosquash`, then a `git rebase --onto` for each branch above
+  the one you amended, then the `.git/gh-stack` metadata write that keeps the
+  recorded bases in step with the refs. Restack offers **Amend & Publish** when
+  the stack is already on GitHub.
+
+  Amending a commit on a branch you are not standing on works too. The staged
+  change is carried across on a `refs/restack/parked` ref, cherry-picked onto the
+  target, and the branch you started on is put back where it was — so you do not
+  have to check out the other branch, and you are returned to where you were.
+
+- **A cherry-pick conflict pauses the plan like a rebase conflict already did.**
+  Carrying a change to a branch that has moved can conflict; when it does, the
+  panel lists the unmerged files and offers Continue and Undo, and Continue runs
+  `git cherry-pick --continue` rather than `git rebase --continue`. Undo restores
+  the parked change to the index, so aborting an amend does not throw away the
+  work that was about to be folded in.
+
+- **Refusals before anything moves.** An amend is refused, with the reason named,
+  when the target commit is not on the branch it was clicked from, when nothing
+  is staged and it is not a reword, when the branch has merged, when a rebase or
+  cherry-pick is already in progress, or when the same subject appears more than
+  once on the branch and `--autosquash` could not tell which one you meant.
+
+### Known behaviour
+
+- **An amend rewrites every commit on the target branch, not only the one you
+  amended.** `git rebase -i --autosquash` replays the branch from its base, so
+  commits that did not change still come out with new SHAs. This is intended —
+  everything above the target is being replayed anyway — but it means the commit
+  list refreshes with different short SHAs than the ones you clicked. Nothing was
+  lost; it is not a bug.
+
 ## 0.8.0
 
 ### Added
